@@ -139,6 +139,21 @@ class BootContext : public Context<word>,
   void Boot(Ct &res, const Ct &input, const EvkMap<word> &evk_map,
             bool min_ks = false) const;
 
+  /**
+   * @brief Perform slim bootstrapping by decoding first, refreshing in the
+   * coefficient domain, and returning to the slots domain without the final
+   * SlotToCoeff step. The input ciphertext must be at a level that supports
+   * the initial SlotToCoeff transformation, typically the default encryption
+   * level.
+   *
+   * @param res bootstrapping result ciphertext
+   * @param input input ciphertext
+   * @param evk_map client-provided EvkMap
+   * @param min_ks whether to use minimum key-switching
+   */
+  void SlimBoot(Ct &res, const Ct &input, const EvkMap<word> &evk_map,
+                bool min_ks = false) const;
+
   // Other functions...
 
   /**

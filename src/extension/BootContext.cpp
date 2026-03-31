@@ -365,6 +365,75 @@ void BootContext<word>::Boot(Ct &res, const Ct &input,
 }
 
 template <typename word>
+void BootContext<word>::SlimBoot(Ct &res, const Ct &input,
+                                 const EvkMap<word> &evk_map,
+                                 bool min_ks) const {
+  int half_degree = this->param_.degree_ / 2;
+  int input_num_slots = input.GetNumSlots();
+  int num_slots = GetBootEnabledNumSlots(input_num_slots);
+  bool full_slot = (num_slots == half_degree);
+  int stc_start_level = boot_param_.GetStCStartLevel();
+  AssertTrue(eval_mod_ != nullptr, "EvalMod not prepared");
+
+  Ct main_ct;
+  int input_level = this->param_.NPToLevel(input.GetNP());
+  AssertTrue(input_level >= stc_start_level,
+             "SlimBoot requires input level >= SlotToCoeff start level");
+  if (input_level > stc_start_level) {
+    this->LevelDown(main_ct, input, stc_start_level);
+  } else {
+    this->Copy(main_ct, input);
+  }
+
+  // 0. Decode first so that optional user circuits can be inserted in the
+  // coefficient domain before the refresh sequence.
+  eval_fft_.at(num_slots).EvaluateStC(GetContext(), main_ct, main_ct, evk_map,
+                                      min_ks);
+
+  int coeff_level = this->param_.NPToLevel(main_ct.GetNP());
+  if (coeff_level > 0) {
+    this->LevelDown(main_ct, main_ct, 0);
+  }
+
+  // 1. Scale up, ModUpToMax, and Trace in the coefficient domain.
+  NPInfo min_np = this->param_.LevelToNP(-1);
+  AssertTrue(min_np.IsSubsetOf(main_ct.GetNP()), "SlimBoot: Invalid input NP");
+  this->MultUnsafe(main_ct, main_ct, scaleup_const_, -1);
+
+  ModUpToMax(main_ct, main_ct, evk_map);
+  main_ct.SetNumSlots(half_degree);
+  Trace(main_ct, num_slots, (half_degree / num_slots), main_ct, evk_map);
+  main_ct.SetNumSlots(num_slots);
+
+  // 2. Return to the slots domain and run EvalMod.
+  CoeffToSlot(main_ct, num_slots, main_ct, evk_map, min_ks);
+
+  main_ct.SetScale(eval_mod_->start_scale_);
+  if (full_slot) {
+    Ct ct_conj;
+    this->HConj(ct_conj, main_ct, evk_map.GetConjugationKey());
+    this->Add(res, main_ct, ct_conj);
+    this->Sub(ct_conj, ct_conj, main_ct);
+    this->MultImaginaryUnit(ct_conj, ct_conj);
+    EvaluateMod(res, res, evk_map.GetMultiplicationKey());
+    EvaluateMod(ct_conj, ct_conj, evk_map.GetMultiplicationKey());
+    this->MultImaginaryUnit(ct_conj, ct_conj);
+    this->Add(res, res, ct_conj);
+  } else {
+    this->HConjAdd(res, main_ct, main_ct, evk_map.GetConjugationKey());
+    EvaluateMod(res, res, evk_map.GetMultiplicationKey());
+  }
+
+  if (boot_variant_.at(num_slots) == BootVariant::kImaginaryRemoving) {
+    this->HConjAdd(res, res, res, evk_map.GetConjugationKey());
+  }
+
+  res.SetNumSlots(input_num_slots);
+  double final_scale = this->param_.GetScale(stc_start_level);
+  res.SetScale(final_scale);
+}
+
+template <typename word>
 void BootContext<word>::Trace(Ct &res, int start_rot_dist, int num_accum,
                               const Ct &input,
                               const EvkMap<word> &evk_map) const {

@@ -38,6 +38,24 @@ TEST_P(Testbed32, Bootstrap) {
   // check correctness
   DecryptAndDecode(res, ct_res);
   CompareMessages(msg1, res);
+
+  __ProfileStart("SlimBoot-Basic", warm_up,
+                 EncodeAndEncrypt(ct1, msg1, default_encryption_level_));
+  boot_context->SlimBoot(ct_res, ct1, interface_->GetEvkMap());
+  __ProfileEnd("SlimBoot-Basic");
+
+  // check correctness
+  DecryptAndDecode(res, ct_res);
+  CompareMessages(msg1, res);
+
+  __ProfileStart("SlimBoot-MinKS", warm_up,
+                 EncodeAndEncrypt(ct1, msg1, default_encryption_level_));
+  boot_context->SlimBoot(ct_res, ct1, interface_->GetEvkMap(), true);
+  __ProfileEnd("SlimBoot-MinKS");
+
+  // check correctness
+  DecryptAndDecode(res, ct_res);
+  CompareMessages(msg1, res);
 }
 
 INSTANTIATE_TEST_SUITE_P(
@@ -80,6 +98,24 @@ TEST_P(Testbed64, Bootstrap) {
   __ProfileStart("Boot-MinKS", warm_up, EncodeAndEncrypt(ct1, msg1, 0));
   boot_context->Boot(ct_res, ct1, interface_->GetEvkMap(), true);
   __ProfileEnd("Boot-MinKS");
+
+  // check correctness
+  DecryptAndDecode(res, ct_res);
+  CompareMessages(msg1, res);
+
+  __ProfileStart("SlimBoot-Basic", warm_up,
+                 EncodeAndEncrypt(ct1, msg1, default_encryption_level_));
+  boot_context->SlimBoot(ct_res, ct1, interface_->GetEvkMap());
+  __ProfileEnd("SlimBoot-Basic");
+
+  // check correctness
+  DecryptAndDecode(res, ct_res);
+  CompareMessages(msg1, res);
+
+  __ProfileStart("SlimBoot-MinKS", warm_up,
+                 EncodeAndEncrypt(ct1, msg1, default_encryption_level_));
+  boot_context->SlimBoot(ct_res, ct1, interface_->GetEvkMap(), true);
+  __ProfileEnd("SlimBoot-MinKS");
 
   // check correctness
   DecryptAndDecode(res, ct_res);
