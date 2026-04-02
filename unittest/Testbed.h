@@ -273,6 +273,13 @@ class Testbed : public testing::TestWithParam<const char *> {
     context_->encoder_.Encode(res, level, scale, msg, num_p_primes);
   }
 
+  bool EncodeGPU(Plaintext<word> &res, const std::vector<Complex> &msg,
+                 int level, bool mod_up = false) const {
+    int num_p_primes = mod_up ? GetAlpha() : 0;
+    double scale = DetermineScale(level);
+    return context_->encoder_.EncodeGPU(res, level, scale, msg, num_p_primes);
+  }
+
   void EncodeAndEncrypt(Ciphertext<word> &res, const std::vector<Complex> &msg,
                         int level, bool mod_up = false) const {
     Plaintext<word> ptxt;

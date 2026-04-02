@@ -4,6 +4,7 @@
 #include "common/CommonUtils.h"
 #include "common/PrimeUtils.h"
 #include "core/BigInt.h"
+#include "EncodeGPU.cuh"
 
 namespace cheddar {
 
@@ -29,6 +30,22 @@ void Encoder<word>::Encode(Plaintext<word> &ptxt, int level, double scale,
   std::vector<Complex> padded_msg(num_slots);
   std::copy(message.begin(), message.end(), padded_msg.begin());
   EncodeWorker(ptxt, level, scale, padded_msg, num_aux);
+}
+
+template <typename word>
+bool Encoder<word>::EncodeGPU(Plaintext<word> &ptxt, int level, double scale,
+                              const std::vector<Complex> &message,
+                              int num_aux /*= 0*/) const {
+  int msg_length = message.size();
+  int num_slots = 1 << Log2Ceil<int>(msg_length);
+  std::vector<Complex> padded_msg(num_slots);
+  std::copy(message.begin(), message.end(), padded_msg.begin());
+  bool used_gpu = TryEncodeGPU(ptxt, level, scale, padded_msg, num_aux, param_,
+                               ntt_handler_, M_, twiddle_factors_);
+  if (!used_gpu) {
+    EncodeWorker(ptxt, level, scale, padded_msg, num_aux);
+  }
+  return used_gpu;
 }
 
 template <typename word>

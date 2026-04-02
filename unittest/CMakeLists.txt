@@ -22,6 +22,14 @@ add_executable(basic_test BasicTest.cpp)
 target_link_libraries(basic_test
                       PRIVATE cheddar gtest_main nlohmann_json::nlohmann_json)
 
+add_executable(encode_gpu_test EncodeGPUTest.cpp)
+target_link_libraries(encode_gpu_test
+                      PRIVATE cheddar gtest_main nlohmann_json::nlohmann_json)
+
+add_executable(encode_bench EncodeBench.cpp)
+target_link_libraries(encode_bench
+                      PRIVATE cheddar nlohmann_json::nlohmann_json)
+
 if (ENABLE_EXTENSION)
   add_executable(boot_test Bootstrapping.cpp)
   target_link_libraries(boot_test

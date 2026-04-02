@@ -68,6 +68,22 @@ class Encoder {
   void Decode(std::vector<Complex> &message, const Plaintext<word> &ptxt) const;
 
   /**
+   * @brief Encode a single message on the GPU when the quantized coefficients
+   * fit in the current int64-based device path. Returns false and falls back to
+   * the CPU implementation otherwise.
+   *
+   * @param ptxt output plaintext (NTT-applied)
+   * @param level level of the plaintext
+   * @param scale scale to apply
+   * @param message complex message to encode
+   * @param num_aux number of auxiliary primes
+   * @return true if the GPU path was used successfully
+   * @return false if the implementation fell back to the CPU path
+   */
+  bool EncodeGPU(Plaintext<word> &ptxt, int level, double scale,
+                 const std::vector<Complex> &message, int num_aux = 0) const;
+
+  /**
    * @brief Encode a real number (double) into an RNS constant for a given level
    * and scale.
    *
