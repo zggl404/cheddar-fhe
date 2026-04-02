@@ -37,6 +37,7 @@ class HoistHandler {
 
   int pt_level_;
   double pt_scale_;
+  bool force_min_ks_;
 
   std::set<int> bs_indices_;
   std::vector<int> gs_indices_;

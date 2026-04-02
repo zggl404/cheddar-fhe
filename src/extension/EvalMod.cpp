@@ -22,8 +22,7 @@ EvalMod<word>::EvalMod(ConstContextPtr<word> context,
   context->encoder_.EncodeConstant(initial_const_, start_level, start_scale_,
                                    -0.25 / actual_K);
 
-  const auto &mod_coefficients = boot_param.mod_coefficients_;
-  int mod_levels = Log2Ceil(mod_coefficients.size());
+  int mod_levels = boot_param.GetNumEvalModScaleLevels() - num_double_angle;
 
   double target_scale = start_scale_;
   for (int i = 0; i < mod_levels; i++) {
@@ -31,21 +30,30 @@ EvalMod<word>::EvalMod(ConstContextPtr<word> context,
                    context->param_.GetRescalePrimeProd(start_level - i);
   }
 
-  mod_functions_.emplace_back(boot_param.mod_coefficients_, start_level,
-                              start_scale_, target_scale, true);
-  mod_functions_[0].Compile(context);
+  mod_function_ = std::make_unique<EvalPoly<word>>(boot_param.mod_coefficients_,
+                                                   start_level, start_scale_,
+                                                   target_scale, true);
+  mod_function_->Compile(context);
 
-  // TODO(jongmin.kim): add support for other evalmod functions.
-
-  double sqrt2pi = std::pow(0.5 / M_PI, 1.0 / double_angle_ratio);
+  double sqrt2pi =
+      boot_param.UseLattigoArcSine() ? 1.0
+                                     : std::pow(0.5 / M_PI,
+                                                1.0 / double_angle_ratio);
   for (int i = 0; i < num_double_angle; i++) {
-    // 2 x^2 - 1
     sqrt2pi *= sqrt2pi;
     int double_angle_level = start_level - mod_levels - i;
     double_angle_.emplace_back(context, 2, -sqrt2pi, double_angle_level,
                                target_scale, double_angle_level, target_scale);
     target_scale = target_scale * target_scale /
                    context->param_.GetRescalePrimeProd(double_angle_level);
+  }
+
+  if (!boot_param.mod_inv_coefficients_.empty()) {
+    int inv_start_level = start_level - boot_param.GetNumEvalModScaleLevels();
+    mod_inv_function_ = std::make_unique<EvalPoly<word>>(
+        boot_param.mod_inv_coefficients_, inv_start_level, target_scale,
+        target_scale, false);
+    mod_inv_function_->Compile(context);
   }
   end_scale_ = target_scale;
 }
@@ -54,15 +62,26 @@ template <typename word>
 void EvalMod<word>::Evaluate(ConstContextPtr<word> context, Ct &res,
                              const Ct &input, const Evk &mult_key) {
   context->Add(res, input, initial_const_);
-  mod_functions_[0].Evaluate(context, res, res, mult_key);
+  mod_function_->Evaluate(context, res, res, mult_key);
   for (const auto &da : double_angle_) {
     da.Evaluate(context, res, res, res, mult_key);
+  }
+  if (mod_inv_function_ != nullptr) {
+    Ct tmp;
+    context->Copy(tmp, res);
+    mod_inv_function_->Evaluate(context, res, tmp, mult_key);
   }
 }
 
 template <typename word>
 int EvalMod<word>::GetEvalModPolyDegree(int poly_index /*= 0*/) const {
-  return mod_functions_.at(poly_index).GetPolyDegree();
+  if (poly_index == 0) {
+    return mod_function_->GetPolyDegree();
+  }
+  if (poly_index == 1 && mod_inv_function_ != nullptr) {
+    return mod_inv_function_->GetPolyDegree();
+  }
+  return 0;
 }
 
 template <typename word>

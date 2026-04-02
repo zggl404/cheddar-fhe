@@ -59,10 +59,6 @@ class BootContext : public Context<word>,
   double GetCtSConst() const;
   double GetStCConst(BootVariant variant = BootVariant::kNormal) const;
   void ModUpToMax(Ct &res, const Ct &input, const EvkMap<word> &evk_map) const;
-  void CoeffToSlot(Ct &res, int num_slots, const Ct &input,
-                   const EvkMap<word> &evk_map, bool min_ks = false) const;
-  void SlotToCoeff(Ct &res, int num_slots, const Ct &input,
-                   const EvkMap<word> &evk_map, bool min_ks = false) const;
   void EvaluateMod(Ct &res, const Ct &input, const Evk &mult_key) const;
 
   ContextPtr<word> GetContext();
@@ -153,6 +149,22 @@ class BootContext : public Context<word>,
    */
   void SlimBoot(Ct &res, const Ct &input, const EvkMap<word> &evk_map,
                 bool min_ks = false) const;
+
+  /**
+   * @brief Applies the coefficient-to-slot linear transform used by
+   * bootstrapping. This is exposed so advanced pipelines can reuse the
+   * prepared FFT stages directly.
+   */
+  void CoeffToSlot(Ct &res, int num_slots, const Ct &input,
+                   const EvkMap<word> &evk_map, bool min_ks = false) const;
+
+  /**
+   * @brief Applies the slot-to-coefficient linear transform used by
+   * bootstrapping. This is exposed so advanced pipelines can reuse the
+   * prepared FFT stages directly.
+   */
+  void SlotToCoeff(Ct &res, int num_slots, const Ct &input,
+                   const EvkMap<word> &evk_map, bool min_ks = false) const;
 
   // Other functions...
 
