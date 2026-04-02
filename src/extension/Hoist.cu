@@ -148,8 +148,15 @@ template <typename word>
 HoistHandler<word>::HoistHandler(ConstContextPtr<word> context,
                                  const PlainHoistMap &hoist_map, int pt_level,
                                  double pt_scale, bool suppress_bs_swap)
-    : pt_level_(pt_level), pt_scale_(pt_scale) {
+    : pt_level_(pt_level), pt_scale_(pt_scale), force_min_ks_(false) {
   AssertTrue(hoist_map.size() > 0, "Hoist: hoist_map should not be empty");
+  if (pt_level_ >= 0) {
+    NPInfo np = context->param_.LevelToNP(pt_level_, 0);
+    int prime_offset = context->param_.GetMaxNumTer() - np.num_ter_;
+    int padded_num_q_primes = np.GetNumQ() + prime_offset;
+    force_min_ks_ =
+        DivCeil(padded_num_q_primes, context->param_.alpha_) == 1;
+  }
   if (kOptimizeAutomorphism && hoist_map.size() == 1 &&
       hoist_map.begin()->first == 0 && !suppress_bs_swap) {
     // when gs = 1, swap bs and gs.
@@ -570,6 +577,7 @@ template <typename word>
 void HoistHandler<word>::Evaluate(ConstContextPtr<word> context, Ct &res,
                                   const Ct &input, const EvkMap<word> &evk_map,
                                   bool min_ks) const {
+  min_ks = min_ks || force_min_ks_;
   std::map<int, Ct> bs;
   EvaluateBabyStep(context, bs, input, evk_map, min_ks);
   EvaluateGiantStep(context, res, bs, evk_map, min_ks);
@@ -977,6 +985,7 @@ void HoistHandler<word>::EvaluateGiantStepOptimized(
 template <typename word>
 void HoistHandler<word>::AddRequiredRotations(EvkRequest &req,
                                               bool min_ks) const {
+  min_ks = min_ks || force_min_ks_;
   if (min_ks) {
     auto [bs_stride, gs_stride] = CheckStrideMinKS();
     req.AddRequest(bs_stride, pt_level_);

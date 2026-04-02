@@ -74,9 +74,9 @@ BootContext<word>::BootContext(const Parameter<word> &param,
   int actual_K = (1 << boot_param.num_double_angle_) * boot_param.initial_K_;
 
   double eval_mod_end_scale = (UINT64_C(1) << log_eval_mod_start_scale);
-  int eval_mod_levels = boot_param.GetNumEvalModLevels();
+  int eval_mod_scale_levels = boot_param.GetNumEvalModScaleLevels();
   int eval_mod_start_level = boot_param.GetEvalModStartLevel();
-  for (int i = 0; i < eval_mod_levels; i++) {
+  for (int i = 0; i < eval_mod_scale_levels; i++) {
     eval_mod_end_scale = eval_mod_end_scale * eval_mod_end_scale /
                          param.GetRescalePrimeProd(eval_mod_start_level - i);
   }

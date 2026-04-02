@@ -26,13 +26,24 @@ if (ENABLE_EXTENSION)
   add_executable(boot_test Bootstrapping.cpp)
   target_link_libraries(boot_test
                         PRIVATE cheddar gtest_main nlohmann_json::nlohmann_json)
+  add_executable(arcsine_check ArcSineChecks.cpp)
+  target_link_libraries(arcsine_check
+                        PRIVATE cheddar gtest_main nlohmann_json::nlohmann_json)
 endif()
 
 configure_file(${CMAKE_SOURCE_DIR}/parameters/bootparam_30.json
                ${CMAKE_CURRENT_BINARY_DIR}/bootparam_30.json COPYONLY)
+configure_file(${CMAKE_SOURCE_DIR}/parameters/bootparam_30_lattigo_arcsine.json
+               ${CMAKE_CURRENT_BINARY_DIR}/bootparam_30_lattigo_arcsine.json COPYONLY)
 configure_file(${CMAKE_SOURCE_DIR}/parameters/bootparam_35.json
                ${CMAKE_CURRENT_BINARY_DIR}/bootparam_35.json COPYONLY)
+configure_file(${CMAKE_SOURCE_DIR}/parameters/bootparam_35_lattigo_arcsine.json
+               ${CMAKE_CURRENT_BINARY_DIR}/bootparam_35_lattigo_arcsine.json COPYONLY)
 configure_file(${CMAKE_SOURCE_DIR}/parameters/bootparam_40.json
                ${CMAKE_CURRENT_BINARY_DIR}/bootparam_40.json COPYONLY)
+configure_file(${CMAKE_SOURCE_DIR}/parameters/bootparam_40_lattigo_arcsine.json
+               ${CMAKE_CURRENT_BINARY_DIR}/bootparam_40_lattigo_arcsine.json COPYONLY)
 configure_file(${CMAKE_SOURCE_DIR}/parameters/bootparam_40_64bit.json
                ${CMAKE_CURRENT_BINARY_DIR}/bootparam_40_64bit.json COPYONLY)
+configure_file(${CMAKE_SOURCE_DIR}/parameters/bootparam_40_64bit_lattigo_arcsine.json
+               ${CMAKE_CURRENT_BINARY_DIR}/bootparam_40_64bit_lattigo_arcsine.json COPYONLY)

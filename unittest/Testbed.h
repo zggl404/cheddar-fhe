@@ -208,9 +208,22 @@ class Testbed : public testing::TestWithParam<const char *> {
       Check(json_data["num_stc_levels"].is_number_integer(),
             "num_stc_levels should be an integer");
       int num_stc_levels = json_data["num_stc_levels"];
+      EvalModMode eval_mod_mode = EvalModMode::kLegacy;
+      if (json_data.contains("evalmod_mode")) {
+        Check(json_data["evalmod_mode"].is_string(),
+              "evalmod_mode should be a string");
+        std::string evalmod_mode = json_data["evalmod_mode"];
+        if (evalmod_mode == "legacy") {
+          eval_mod_mode = EvalModMode::kLegacy;
+        } else if (evalmod_mode == "lattigo_arcsine") {
+          eval_mod_mode = EvalModMode::kLattigoArcSine;
+        } else {
+          Check(false, "Unsupported evalmod_mode: " + evalmod_mode);
+        }
+      }
       context_ = BootContext<word>::Create(
-          *param_,
-          BootParameter(param_->max_level_, num_cts_levels, num_stc_levels));
+          *param_, BootParameter(param_->max_level_, num_cts_levels,
+                                 num_stc_levels, 5, eval_mod_mode));
     } else {
       context_ = Context<word>::Create(*param_);
     }

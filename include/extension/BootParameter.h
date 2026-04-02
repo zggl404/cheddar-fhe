@@ -4,6 +4,11 @@
 
 namespace cheddar {
 
+enum class EvalModMode {
+  kLegacy,
+  kLattigoArcSine,
+};
+
 /**
  * @brief A class for storing bootstrapping parameters.
  *
@@ -17,29 +22,51 @@ struct BootParameter {
    * @param num_stc_levels the number of levels for SlotToCoeff (StC)
    * @param log_message_ratio approximately log2(q0 / scale to target at the
    * lowest level). Do not modify if you do not know what you are doing.
+   * @param eval_mod_mode implementation mode of EvalMod
    */
   BootParameter(int max_level, int num_cts_levels, int num_stc_levels,
-                int log_message_ratio = 5);
+                int log_message_ratio = 5,
+                EvalModMode eval_mod_mode = EvalModMode::kLegacy);
 
   const int max_level_;
   const int num_cts_levels_;
   const int num_stc_levels_;
 
   const int log_message_ratio_;
+  const EvalModMode eval_mod_mode_;
 
   // The following three parameters are inter-related, so changing
   // one of them requires changing the others.
   // TODO (jongmin.kim): Allow changing these parameters
   const std::vector<double> mod_coefficients_;
+  const std::vector<double> mod_inv_coefficients_;
   const int num_double_angle_;
   const int initial_K_;
 
   /**
-   * @brief Get the level consumption for EvalMod
+   * @brief Get the level consumption for the scale-changing part of EvalMod.
+   *
+   * @return int the number of levels consumed before the optional inverse sine
+   * correction
+   */
+  int GetNumEvalModScaleLevels() const;
+
+  /**
+   * @brief Get the level consumption for the optional inverse sine
+   * polynomial.
+   *
+   * @return int the number of levels consumed by the inverse sine correction
+   */
+  int GetNumEvalModInvLevels() const;
+
+  /**
+   * @brief Get the total level consumption for EvalMod.
    *
    * @return int the number of levels consumed by EvalMod
    */
   int GetNumEvalModLevels() const;
+
+  bool UseLattigoArcSine() const;
 
   /**
    * @brief Get the maximum level

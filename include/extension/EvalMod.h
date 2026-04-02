@@ -1,6 +1,7 @@
 #pragma once
 
 #include <cmath>
+#include <memory>
 #include <vector>
 
 #include "core/Context.h"
@@ -26,7 +27,8 @@ class EvalMod {
   using Pt = Plaintext<word>;
   using Evk = EvaluationKey<word>;
 
-  std::vector<EvalPoly<word>> mod_functions_;
+  std::unique_ptr<EvalPoly<word>> mod_function_;
+  std::unique_ptr<EvalPoly<word>> mod_inv_function_;
   std::vector<AXYPBZ<word>> double_angle_;
 
   Constant<word> initial_const_;
@@ -61,7 +63,8 @@ class EvalMod {
   /**
    * @brief Get the polynomial degree of the mod function.
    *
-   * @param poly_index index of the polynomial (default: 0)
+   * @param poly_index `0` for the main cosine polynomial, `1` for the optional
+   * inverse sine polynomial
    * @return int the degree of the polynomial
    */
   int GetEvalModPolyDegree(int poly_index = 0) const;
