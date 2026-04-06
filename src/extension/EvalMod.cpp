@@ -1,5 +1,7 @@
 #include "extension/EvalMod.h"
 
+#include <cmath>
+
 #include "common/Assert.h"
 #include "common/CommonUtils.h"
 
@@ -63,7 +65,8 @@ void EvalMod<word>::Evaluate(ConstContextPtr<word> context, Ct &res,
                              const Ct &input, const Evk &mult_key) {
   context->Add(res, input, initial_const_);
   mod_function_->Evaluate(context, res, res, mult_key);
-  for (const auto &da : double_angle_) {
+  for (size_t i = 0; i < double_angle_.size(); ++i) {
+    const auto &da = double_angle_[i];
     da.Evaluate(context, res, res, res, mult_key);
   }
   if (mod_inv_function_ != nullptr) {

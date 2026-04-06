@@ -8,6 +8,7 @@ using json = nlohmann::json;
 #include <algorithm>
 #include <chrono>
 #include <cmath>
+#include <cstdlib>
 #include <fstream>
 #include <iomanip>
 #include <iostream>
@@ -383,6 +384,7 @@ class Testbed : public testing::TestWithParam<const char *> {
 
     ASSERT_EQ(equal, true) << "Messages are not equal";
   }
+
 };
 
 using Testbed32 = Testbed<uint32_t>;

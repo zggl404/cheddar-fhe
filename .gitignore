@@ -15,3 +15,7 @@ compile_commands.json
 CTestTestfile.cmake
 _deps
 *~
+docs/*
+logs/*
+__pycache__/*
+res.txt

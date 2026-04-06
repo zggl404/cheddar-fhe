@@ -86,10 +86,10 @@ BootContext<word>::BootContext(const Parameter<word> &param,
       (UINT64_C(1) << (log_eval_mod_start_scale - this->param_.log_degree_)) /
       (q0_prod * actual_K);
   stc_const_ = (q0_prod * param.GetScale(boot_param.GetEndLevel())) /
-               (eval_mod_end_scale * level_zero_scale);
-
+               (param.GetRescalePrimeProd(boot_param.GetCtSStartLevel()) *
+                level_zero_scale);
+  std::cout<<"the scale of ctos is "<<log2(param.GetRescalePrimeProd(boot_param.GetCtSStartLevel()));
   this->encoder_.EncodeConstant(scaleup_const_, -1, 1.0, (1 << log_scaleup_));
-
   // Populating mod_max_intt_const_;
 
   int num_base = q0.size();
@@ -360,8 +360,7 @@ void BootContext<word>::Boot(Ct &res, const Ct &input,
 
   // Restore num slots and set scale (just in case)
   res.SetNumSlots(input_num_slots);
-  double final_scale = this->param_.GetScale(boot_param_.GetEndLevel());
-  res.SetScale(final_scale);
+  res.SetScale(this->param_.GetScale(boot_param_.GetEndLevel()));
 }
 
 template <typename word>
@@ -429,8 +428,7 @@ void BootContext<word>::SlimBoot(Ct &res, const Ct &input,
   }
 
   res.SetNumSlots(input_num_slots);
-  double final_scale = this->param_.GetScale(stc_start_level);
-  res.SetScale(final_scale);
+  res.SetScale(this->param_.GetScale(stc_start_level));
 }
 
 template <typename word>
