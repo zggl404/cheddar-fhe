@@ -15,6 +15,9 @@
 namespace cheddar {
 
 template <typename word>
+class EvkMap;
+
+template <typename word>
 class Context {
  protected:
   // short-hand notations
@@ -377,6 +380,32 @@ class Context {
   void MadUnsafe(Ct &res, const Ct &a, const Const &b) const;
 
   /**
+   * @brief res = res + (a << rot_dist) * b, but faster.
+   *
+   * @param res result ciphertext / accumulator
+   * @param a input ciphertext to perform HRot
+   * @param b input plaintext to multiply
+   * @param rot_key rotation key
+   * @param rot_dist rotation distance
+   */
+  void HRotPMadUnsafe(Ct &res, const Ct &a, const Pt &b, const Evk &rot_key,
+                      int rot_dist) const;
+
+  /**
+   * @brief res = res + sum_i ((a << rot_dists[i]) * b[i]), with shared
+   *        hoisted mult-key preparation across rotations.
+   *
+   * @param res result ciphertext / accumulator
+   * @param a input ciphertext to perform HRot
+   * @param b input plaintexts to multiply
+   * @param evk_map rotation key map
+   * @param rot_dists rotation distances
+   */
+  void HRotPMadManyUnsafe(Ct &res, const Ct &a, const std::vector<Pt> &b,
+                          const EvkMap<word> &evk_map,
+                          const std::vector<int> &rot_dists) const;
+
+  /**
    * @brief res = (a << rot_dist) + b, but faster.
    *
    * @param res result ciphertext
@@ -387,6 +416,19 @@ class Context {
    */
   void HRotAdd(Ct &res, const Ct &a, const Ct &b, const Evk &rot_key,
                int rot_dist) const;
+
+  /**
+   * @brief res = (a << rot_dist) * b + c, but faster.
+   *
+   * @param res result ciphertext
+   * @param a input ciphertext to perform HRot
+   * @param b input plaintext to multiply
+   * @param c input ciphertext to add
+   * @param rot_key rotation key
+   * @param rot_dist rotation distance
+   */
+  void HRotMultPlainAdd(Ct &res, const Ct &a, const Pt &b, const Ct &c,
+                        const Evk &rot_key, int rot_dist) const;
 
   /**
    * @brief res = conj(a) + b, but faster.

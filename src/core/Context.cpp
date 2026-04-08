@@ -1,8 +1,11 @@
 #include "core/Context.h"
 
+#include <map>
+
 #include "common/Assert.h"
 #include "common/CommonUtils.h"
 #include "common/PrimeUtils.h"
+#include "core/EvkMap.h"
 
 namespace cheddar {
 
@@ -833,6 +836,45 @@ void Context<word>::HRotAdd(Ct &res, const Ct &a, const Ct &b,
 }
 
 template <typename word>
+void Context<word>::HRotMultPlainAdd(Ct &res, const Ct &a, const Pt &b,
+                                     const Ct &c, const Evk &rot_key,
+                                     int rot_dist) const {
+  AssertSameNP(a, b);
+  AssertSameNP(b, c);
+  AssertSameScale(a.GetScale() * b.GetScale(), c.GetScale());
+  int num_slots = Max(a.GetNumSlots(), b.GetNumSlots(), c.GetNumSlots());
+  rot_dist %= num_slots;
+  if (rot_dist < 0) rot_dist += num_slots;
+  if (rot_dist == 0) {
+    Ct tmp;
+    Mult(tmp, a, b);
+    Add(res, tmp, c);
+    return;
+  }
+
+  Ct tmp;
+  MultKey(tmp, a, rot_key);
+
+  NPInfo np = a.GetNP();
+  if (c.HasRx()) {
+    res.ModifyNP(np);
+    res.PrepareRx();
+    CopyDeviceToDevice(res.rx_, c.rx_);
+  } else {
+    res.RemoveRx();
+    res.ModifyNP(np);
+  }
+  res.SetNumSlots(num_slots);
+  res.SetScale(c.GetScale());
+
+  auto res_view = res.ViewVector(0, true);
+  elem_handler_.PermutePAccum(res_view, np, {rot_dist},
+                              {tmp.ConstViewVector(0, true),
+                               c.ConstViewVector(0, true)},
+                              {b.ConstView()});
+}
+
+template <typename word>
 void Context<word>::HConjAdd(Ct &res, const Ct &a, const Ct &b,
                              const Evk &conj_key) const {
   AssertSameNP(a, b);
@@ -911,6 +953,188 @@ void Context<word>::MadUnsafe(Ct &res, const Ct &a, const Const &b) const {
     // elem_handler_.MadConstTwo(res.bx_, res.ax_, a.bx_, a.ax_, b.cx_,
     //                           num_q_primes);
   }
+}
+
+template <typename word>
+void Context<word>::HRotPMadUnsafe(Ct &res, const Ct &a, const Pt &b,
+                                   const Evk &rot_key, int rot_dist) const {
+  AssertSameNP(res, a);
+  AssertSameNP(a, b);
+  AssertSameScale(res, a.GetScale() * b.GetScale());
+  int num_slots = Max(a.GetNumSlots(), b.GetNumSlots());
+  AssertTrue(res.GetNumSlots() == num_slots,
+             "HRotPMadUnsafe should be only used for the same number of slots");
+
+  rot_dist %= num_slots;
+  if (rot_dist < 0) rot_dist += num_slots;
+  if (rot_dist == 0) {
+    Ct tmp;
+    Mult(tmp, a, b);
+    Add(res, res, tmp);
+    return;
+  }
+
+  Ct tmp;
+  MultKey(tmp, a, rot_key);
+
+  auto res_view = res.ViewVector(0, true);
+  auto res_const_view = res.ConstViewVector(0, true);
+  elem_handler_.PermutePAccum(res_view, a.GetNP(), {rot_dist},
+                              {tmp.ConstViewVector(0, true), res_const_view},
+                              {b.ConstView()});
+}
+
+template <typename word>
+void Context<word>::HRotPMadManyUnsafe(
+    Ct &res, const Ct &a, const std::vector<Pt> &b,
+    const EvkMap<word> &evk_map, const std::vector<int> &rot_dists) const {
+  int num_terms = rot_dists.size();
+  AssertTrue(num_terms > 0, "HRotPMadManyUnsafe requires at least one term");
+  AssertTrue(num_terms == static_cast<int>(b.size()),
+             "HRotPMadManyUnsafe: plaintext/rotation size mismatch");
+  AssertTrue(&res != &a,
+             "HRotPMadManyUnsafe does not support in-place input/accumulator");
+  AssertSameNP(res, a);
+  AssertTrue(res.GetNP().num_aux_ == 0 && a.GetNP().num_aux_ == 0,
+             "HRotPMadManyUnsafe should be only used for q primes");
+  AssertFalse(res.HasRx(),
+              "HRotPMadManyUnsafe does not support accumulators with aux");
+
+  int num_slots = a.GetNumSlots();
+  std::vector<int> normalized_rot(rot_dists);
+  std::vector<int> key_rot(rot_dists);
+  for (int i = 0; i < num_terms; i++) {
+    AssertTrue(key_rot.at(i) >= 0,
+               "HRotPMadManyUnsafe requires non-negative rotation indices");
+    AssertSameNP(a, b.at(i));
+    AssertSameScale(res, a.GetScale() * b.at(i).GetScale());
+    num_slots = Max(num_slots, b.at(i).GetNumSlots());
+    normalized_rot.at(i) %= num_slots;
+    if (normalized_rot.at(i) < 0) normalized_rot.at(i) += num_slots;
+  }
+  AssertTrue(res.GetNumSlots() == num_slots,
+             "HRotPMadManyUnsafe should be only used for the same number of "
+             "slots");
+
+  const NPInfo &a_np = a.GetNP();
+  int num_q = a_np.GetNumQ();
+  int degree = param_.degree_;
+
+  std::map<int, int> rot_to_tmp;
+  for (int i = 0; i < num_terms; i++) {
+    if (normalized_rot.at(i) != 0) {
+      rot_to_tmp.try_emplace(key_rot.at(i), rot_to_tmp.size());
+    }
+  }
+
+  std::vector<Ct> tmp_terms;
+  tmp_terms.reserve(rot_to_tmp.size());
+  for (size_t i = 0; i < rot_to_tmp.size(); i++) {
+    tmp_terms.emplace_back(a_np);
+  }
+
+  if (!rot_to_tmp.empty()) {
+    const Evk &first_key = evk_map.GetRotationKey(rot_to_tmp.begin()->first);
+    int level = param_.NPToLevel(a_np);
+    int num_aux = first_key.GetNP().num_aux_;
+    AdjustLevelForMultKey(level, num_q, num_aux);
+    int prime_offset = (level == -1 ? 0 : (param_.GetMaxNumTer() - a_np.num_ter_));
+    int padded_num_q = num_q + prime_offset;
+    int beta = DivCeil(padded_num_q, num_aux);
+    const auto &mod_switcher =
+        level == -1 ? GetDtSModSwitchHandler() : mod_switch_handlers_.at(level);
+
+    std::vector<Dv> mod_up_result;
+    std::vector<DvView<word>> mod_up_result_view;
+    for (int i = 0; i < beta; i++) {
+      int prime_index_end = Min((i + 1) * num_aux, padded_num_q);
+      if (prime_index_end <= prime_offset) {
+        mod_up_result.emplace_back(0);
+        mod_up_result_view.push_back(mod_up_result.back().View(0));
+      } else {
+        mod_up_result.emplace_back((num_q + num_aux) * degree);
+        mod_up_result_view.push_back(
+            mod_up_result.back().View(num_aux * degree));
+      }
+    }
+
+    if (a.HasRx()) {
+      mod_switcher.ModUp(mod_up_result_view, a.RxConstView());
+    } else {
+      mod_switcher.ModUp(mod_up_result_view, a.AxConstView());
+    }
+
+    NPInfo p_prod_np = a_np;
+    DvConstView<word> p_prod =
+        (level == -1) ? p_prod_dts_.ConstView(0) : GetPProd(p_prod_np);
+
+    Dv bx_pseudo(num_q * degree);
+    DvView<word> bx_pseudo_view = bx_pseudo.View();
+    mod_switcher.PseudoModUp(bx_pseudo_view, a.BxConstView(), p_prod);
+
+    Dv ax_pseudo;
+    if (a.HasRx()) {
+      ax_pseudo.resize(num_q * degree);
+      DvView<word> ax_pseudo_view = ax_pseudo.View();
+      mod_switcher.PseudoModUp(ax_pseudo_view, a.AxConstView(), p_prod);
+    }
+    DvConstView<word> bx_pseudo_const = bx_pseudo.ConstView();
+
+    for (const auto &[rot_dist, tmp_index] : rot_to_tmp) {
+      const Evk &rot_key = evk_map.GetRotationKey(rot_dist);
+      AssertTrue(rot_key.GetNP().num_aux_ == num_aux,
+                 "HRotPMadManyUnsafe: incompatible rotation key aux primes");
+      AssertTrue(rot_key.GetBeta() >= beta,
+                 "HRotPMadManyUnsafe: incompatible rotation key beta");
+
+      Ct accum;
+      MultKeyNoModDown(accum, mod_up_result, a, rot_key);
+
+      if (a.HasRx()) {
+        DvView<word> accum_bx_q(accum.bx_.data(), num_q * degree, 0);
+        DvView<word> accum_ax_q(accum.ax_.data(), num_q * degree, 0);
+        std::vector<DvView<word>> accum_q_view = {accum_bx_q, accum_ax_q};
+        std::vector<DvConstView<word>> accum_q_const = {accum_bx_q, accum_ax_q};
+        elem_handler_.Add(accum_q_view, a_np, accum_q_const,
+                          {bx_pseudo_const, ax_pseudo.ConstView()});
+      } else {
+        DvView<word> accum_bx_q(accum.bx_.data(), num_q * degree, 0);
+        std::vector<DvView<word>> accum_q_view = {accum_bx_q};
+        std::vector<DvConstView<word>> accum_q_const = {accum_bx_q};
+        elem_handler_.Add(accum_q_view, a_np, accum_q_const, {bx_pseudo_const});
+      }
+
+      Ct &tmp = tmp_terms.at(tmp_index);
+      tmp.RemoveRx();
+      tmp.ModifyNP(a_np);
+      tmp.SetScale(a.GetScale());
+      tmp.SetNumSlots(a.GetNumSlots());
+
+      auto tmp_bx_view = tmp.BxView();
+      auto tmp_ax_view = tmp.AxView();
+      mod_switcher.ModDown(tmp_bx_view, accum.BxConstView());
+      mod_switcher.ModDown(tmp_ax_view, accum.AxConstView());
+    }
+  }
+
+  std::vector<std::vector<DvConstView<word>>> ct_srcs;
+  std::vector<DvConstView<word>> pt_srcs;
+  ct_srcs.reserve(num_terms + 1);
+  pt_srcs.reserve(num_terms);
+  for (int i = 0; i < num_terms; i++) {
+    if (normalized_rot.at(i) == 0) {
+      ct_srcs.push_back(a.ConstViewVector(0, true));
+    } else {
+      ct_srcs.push_back(
+          tmp_terms.at(rot_to_tmp.at(key_rot.at(i))).ConstViewVector(0, true));
+    }
+    pt_srcs.push_back(b.at(i).ConstView());
+  }
+
+  auto res_view = res.ViewVector(0, true);
+  auto res_const_view = res.ConstViewVector(0, true);
+  ct_srcs.push_back(res_const_view);
+  elem_handler_.PermutePAccum(res_view, a_np, normalized_rot, ct_srcs, pt_srcs);
 }
 
 template <typename word>

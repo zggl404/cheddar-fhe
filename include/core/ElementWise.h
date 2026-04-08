@@ -32,6 +32,13 @@ class ElementWiseHandler {
                      const std::vector<std::vector<DvConstView<word>>> &ct_srcs,
                      const std::vector<DvConstView<word>> &common_srcs) const;
 
+  template <bool const_accum>
+  void PermuteCPAccumWorker(
+      std::vector<DvView<word>> &dst, const NPInfo &np,
+      const std::vector<int> &permute_amounts,
+      const std::vector<std::vector<DvConstView<word>>> &ct_srcs,
+      const std::vector<DvConstView<word>> &common_srcs) const;
+
   void PermuteAccumWorker(
       std::vector<DvView<word>> &dst, const NPInfo &np,
       const std::vector<int> &permute_amounts,
@@ -99,6 +106,11 @@ class ElementWiseHandler {
       std::vector<DvView<word>> &dst, const NPInfo &np,
       const std::vector<int> &permute_amounts,
       const std::vector<std::vector<DvConstView<word>>> &srcs) const;
+  void PermutePAccum(
+      std::vector<DvView<word>> &dst, const NPInfo &np,
+      const std::vector<int> &permute_amounts,
+      const std::vector<std::vector<DvConstView<word>>> &ct_srcs,
+      const std::vector<DvConstView<word>> &pt_srcs) const;
   void Accum(std::vector<DvView<word>> &dst, const NPInfo &np,
              const std::vector<std::vector<DvConstView<word>>> &srcs) const;
   void PAccum(std::vector<DvView<word>> &dst, const NPInfo &np,

@@ -86,9 +86,7 @@ BootContext<word>::BootContext(const Parameter<word> &param,
       (UINT64_C(1) << (log_eval_mod_start_scale - this->param_.log_degree_)) /
       (q0_prod * actual_K);
   stc_const_ = (q0_prod * param.GetScale(boot_param.GetEndLevel())) /
-               (param.GetRescalePrimeProd(boot_param.GetCtSStartLevel()) *
-                level_zero_scale);
-  std::cout<<"the scale of ctos is "<<log2(param.GetRescalePrimeProd(boot_param.GetCtSStartLevel()));
+               (eval_mod_end_scale * level_zero_scale);
   this->encoder_.EncodeConstant(scaleup_const_, -1, 1.0, (1 << log_scaleup_));
   // Populating mod_max_intt_const_;
 

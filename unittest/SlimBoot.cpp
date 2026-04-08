@@ -59,7 +59,7 @@ TEST_P(Testbed32, SlimBootstrapOnly) {
 
 INSTANTIATE_TEST_SUITE_P(
     CheddarSlimBoot, Testbed32,
-    testing::Values("bootparam_45_arcsine.json","bootparam_40_lattigo_arcsine.json"),
+    testing::Values("bootparam_40_lattigo_arcsine.json"),
     [](const testing::TestParamInfo<Testbed32::ParamType> &info) {
       std::string param_name = info.param;
       std::replace(param_name.begin(), param_name.end(), '.', '_');

@@ -398,6 +398,174 @@ TEST_P(Testbed32, HRot) {
   }
 }
 
+TEST_P(Testbed32, HRotMultPlainAdd) {
+  int num_slots = (1 << log_degree_) / 2;
+  word test_rot_dist = 1234;
+  interface_->PrepareRotationKey(test_rot_dist, param_->max_level_);
+
+  for (int level = 1; level <= param_->max_level_; level++) {
+    std::vector<Complex> msg1, msg2, msg3;
+    std::vector<Complex> true_res;
+    GenerateRandomMessage(msg1);
+    GenerateRandomMessage(msg2);
+    GenerateRandomMessage(msg3);
+    for (int i = 0; i < static_cast<int>(msg1.size()); i++) {
+      true_res.push_back(msg1[(i + test_rot_dist) % num_slots] * msg2[i] +
+                         msg3[i]);
+    }
+
+    Ciphertext<word> ct1, ct3, ct_res;
+    Plaintext<word> pt2, pt3;
+
+    std::string name =
+        "HRotMultPlainAdd (fused) at level" + std::to_string(level);
+    auto prepare_cts = [&]() {
+      EncodeAndEncrypt(ct1, msg1, level);
+      Encode(pt2, msg2, level);
+      context_->encoder_.Encode(pt3, level,
+                                DetermineScale(level) * DetermineScale(level),
+                                msg3, 0);
+      interface_->Encrypt(ct3, pt3);
+    };
+
+    __ProfileStart(name, warm_up, prepare_cts());
+    context_->HRotMultPlainAdd(ct_res, ct1, pt2, ct3,
+                               interface_->GetRotationKey(test_rot_dist),
+                               test_rot_dist);
+    __ProfileEnd(name);
+
+    std::vector<Complex> res;
+    DecryptAndDecode(res, ct_res);
+    CompareMessages(true_res, res, level == param_->max_level_);
+  }
+}
+
+TEST_P(Testbed32, HRotPMadUnsafe) {
+  int num_slots = (1 << log_degree_) / 2;
+  word test_rot_dist = 1234;
+  interface_->PrepareRotationKey(test_rot_dist, param_->max_level_);
+
+  for (int level = 1; level <= param_->max_level_; level++) {
+    std::vector<Complex> msg1, msg2, msg3;
+    std::vector<Complex> true_res;
+    GenerateRandomMessage(msg1);
+    GenerateRandomMessage(msg2);
+    GenerateRandomMessage(msg3);
+    for (int i = 0; i < static_cast<int>(msg1.size()); i++) {
+      true_res.push_back(msg1[(i + test_rot_dist) % num_slots] * msg2[i] +
+                         msg3[i]);
+    }
+
+    Ciphertext<word> ct1, ct_res;
+    Plaintext<word> pt2, pt3;
+
+    std::string name =
+        "HRotPMadUnsafe (fused) at level" + std::to_string(level);
+    auto prepare_cts = [&]() {
+      EncodeAndEncrypt(ct1, msg1, level);
+      Encode(pt2, msg2, level);
+      context_->encoder_.Encode(pt3, level,
+                                DetermineScale(level) * DetermineScale(level),
+                                msg3, 0);
+      interface_->Encrypt(ct_res, pt3);
+    };
+
+    __ProfileStart(name, warm_up, prepare_cts());
+    context_->HRotPMadUnsafe(ct_res, ct1, pt2,
+                             interface_->GetRotationKey(test_rot_dist),
+                             test_rot_dist);
+    __ProfileEnd(name);
+
+    std::vector<Complex> res;
+    DecryptAndDecode(res, ct_res);
+    CompareMessages(true_res, res, level == param_->max_level_);
+  }
+}
+
+TEST_P(Testbed32, HRotPMadManyUnsafe) {
+  int num_slots = (1 << log_degree_) / 2;
+  std::vector<int> test_rot_dists = {1024, 6144, 11264};
+  std::vector<int> normalized_rot;
+  normalized_rot.reserve(test_rot_dists.size());
+  EvkRequest req;
+  for (int rot_dist : test_rot_dists) {
+    req.AddRequest(rot_dist, param_->max_level_);
+    int normalized = rot_dist % num_slots;
+    if (normalized < 0) normalized += num_slots;
+    normalized_rot.push_back(normalized);
+  }
+
+  interface_->PrepareRotationKey(req);
+
+  std::vector<int> test_levels = {1, param_->max_level_ / 2, param_->max_level_};
+  if (test_levels[1] == test_levels[0]) {
+    test_levels.erase(test_levels.begin() + 1);
+  }
+  if (test_levels.back() == test_levels[test_levels.size() - 2]) {
+    test_levels.pop_back();
+  }
+
+  for (int level : test_levels) {
+    std::vector<Complex> msg_input, msg_plain, msg_acc;
+    std::vector<Complex> true_res;
+    GenerateRandomMessage(msg_input);
+    GenerateRandomMessage(msg_plain);
+    GenerateRandomMessage(msg_acc);
+    true_res = msg_acc;
+    for (int rot_dist : normalized_rot) {
+      for (int i = 0; i < static_cast<int>(msg_input.size()); i++) {
+        true_res[i] += msg_input[(i + rot_dist) % num_slots] * msg_plain[i];
+      }
+    }
+
+    Ciphertext<word> ct_input, ct_loop, ct_hoisted;
+    Plaintext<word> pt_acc;
+    std::vector<Plaintext<word>> pts;
+
+    auto prepare_cts = [&]() {
+      EncodeAndEncrypt(ct_input, msg_input, level);
+      context_->encoder_.Encode(pt_acc, level,
+                                DetermineScale(level) * DetermineScale(level),
+                                msg_acc, 0);
+      interface_->Encrypt(ct_loop, pt_acc);
+      interface_->Encrypt(ct_hoisted, pt_acc);
+
+      pts.clear();
+      pts.reserve(test_rot_dists.size());
+      for (size_t i = 0; i < test_rot_dists.size(); i++) {
+        pts.emplace_back();
+        Encode(pts.back(), msg_plain, level);
+      }
+    };
+
+    std::string loop_name =
+        "HRotPMadUnsafe loop (no hoist) at level" + std::to_string(level);
+    __ProfileStart(loop_name, warm_up, prepare_cts());
+    for (size_t i = 0; i < test_rot_dists.size(); i++) {
+      context_->HRotPMadUnsafe(ct_loop, ct_input, pts.at(i),
+                               interface_->GetRotationKey(test_rot_dists.at(i)),
+                               test_rot_dists.at(i));
+    }
+    __ProfileEnd(loop_name);
+
+    std::vector<Complex> loop_res;
+    DecryptAndDecode(loop_res, ct_loop);
+    CompareMessages(true_res, loop_res, level == param_->max_level_);
+
+    std::string hoisted_name =
+        "HRotPMadManyUnsafe (hoisted fused) at level" + std::to_string(level);
+    __ProfileStart(hoisted_name, warm_up, prepare_cts());
+    context_->HRotPMadManyUnsafe(ct_hoisted, ct_input, pts,
+                                 interface_->GetEvkMap(), test_rot_dists);
+    __ProfileEnd(hoisted_name);
+
+    std::vector<Complex> hoisted_res;
+    DecryptAndDecode(hoisted_res, ct_hoisted);
+    CompareMessages(true_res, hoisted_res, level == param_->max_level_);
+    CompareMessages(loop_res, hoisted_res, level == param_->max_level_);
+  }
+}
+
 TEST_P(Testbed32, HConj) {
   for (int level = 0; level <= param_->max_level_; level++) {
     std::vector<Complex> msg1;

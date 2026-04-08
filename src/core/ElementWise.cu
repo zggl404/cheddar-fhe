@@ -365,6 +365,143 @@ __global__ void CPAccumAdd(OutputPtrList<word, num_poly> dst,
   }
 }
 
+// Permute + CAccum/PAccum version without src0.
+template <typename word, int num_poly, bool const_accum, typename... PtrLists>
+__global__ void PermuteCPAccum(
+    OutputPtrList<word, num_poly> dst, const word *primes,
+    const make_signed_t<word> *inv_primes, int num_q_primes,
+    const PtrLists... srcs) {
+  static_assert(sizeof...(PtrLists) > 0,
+                "PermuteCPAccum must have at least one source");
+  static_assert((std::is_same_v<
+                     PtrLists, PermuteCPAccumInputPtrList<word, num_poly>> &&
+                 ...),
+                "PermuteCPAccum must have PermuteCPAccumInputPtrList as the "
+                "last source");
+
+  using signed_word = make_signed_t<word>;
+  int log_degree = cm_log_degree();
+  int degree = 1 << log_degree;
+  int i = blockIdx.x * blockDim.x + threadIdx.x;
+  int prime_index = (i >> log_degree);
+  uint32_t x_idx = i & (degree - 1);
+  uint32_t x_idx_rev = basic::BitReverse(x_idx, log_degree + 1) + 1;
+  const word prime = basic::StreamingLoadConst(primes + prime_index);
+  const signed_word inv_prime =
+      basic::StreamingLoadConst(inv_primes + prime_index);
+
+  word result[num_poly] = {0};
+  bool aux_part = (prime_index >= num_q_primes);
+  int y_offset = prime_index << log_degree;
+
+  (
+      [&] {
+        uint32_t gf = srcs.galois_factor_;
+        int src_idx = basic::BitReverse(x_idx_rev * gf - 1, log_degree + 1);
+        int common_index = const_accum ? prime_index : i;
+        if (aux_part) {
+          src_idx += srcs.extra_;
+          common_index += srcs.common_extra_;
+        }
+
+        word common_temp = 0;
+        if constexpr (const_accum) {
+          common_temp =
+              basic::StreamingLoadConst(srcs.common_ptr_ + common_index);
+        } else {
+          common_temp = basic::StreamingLoad(srcs.common_ptr_ + common_index);
+        }
+
+#pragma unroll
+        for (int j = 0; j < num_poly; j++) {
+          const word src_value =
+              basic::StreamingLoad(srcs.ptrs_[j] + src_idx + y_offset);
+          word mult =
+              basic::MultMontgomery(common_temp, src_value, prime, inv_prime);
+          result[j] = basic::Add(result[j], mult, prime);
+        }
+      }(),
+      ...);
+
+#pragma unroll
+  for (int j = 0; j < num_poly; j++) {
+    dst.ptrs_[j][i] = result[j];
+  }
+}
+
+// Permute + CAccum/PAccum version with src0.
+template <typename word, int num_poly, bool const_accum, typename... PtrLists>
+__global__ void PermuteCPAccumAdd(
+    OutputPtrList<word, num_poly> dst, const word *primes,
+    const make_signed_t<word> *inv_primes, int num_q_primes,
+    const InputPtrList<word, num_poly> src0, const PtrLists... srcs) {
+  static_assert(sizeof...(PtrLists) > 0,
+                "PermuteCPAccumAdd must have at least one source");
+  static_assert((std::is_same_v<
+                     PtrLists, PermuteCPAccumInputPtrList<word, num_poly>> &&
+                 ...),
+                "PermuteCPAccumAdd must have PermuteCPAccumInputPtrList as "
+                "the last source");
+
+  using signed_word = make_signed_t<word>;
+  int log_degree = cm_log_degree();
+  int degree = 1 << log_degree;
+  int i = blockIdx.x * blockDim.x + threadIdx.x;
+  int prime_index = (i >> log_degree);
+  uint32_t x_idx = i & (degree - 1);
+  uint32_t x_idx_rev = basic::BitReverse(x_idx, log_degree + 1) + 1;
+  const word prime = basic::StreamingLoadConst(primes + prime_index);
+  const signed_word inv_prime =
+      basic::StreamingLoadConst(inv_primes + prime_index);
+  bool aux_part = (prime_index >= num_q_primes);
+
+  word result[num_poly];
+  int src0_index = i;
+  if (aux_part) {
+    src0_index += src0.extra_;
+  }
+#pragma unroll
+  for (int j = 0; j < num_poly; j++) {
+    result[j] = basic::StreamingLoad(src0.ptrs_[j] + src0_index);
+  }
+
+  int y_offset = prime_index << log_degree;
+
+  (
+      [&] {
+        uint32_t gf = srcs.galois_factor_;
+        int src_idx = basic::BitReverse(x_idx_rev * gf - 1, log_degree + 1);
+        int common_index = const_accum ? prime_index : i;
+        if (aux_part) {
+          src_idx += srcs.extra_;
+          common_index += srcs.common_extra_;
+        }
+
+        word common_temp = 0;
+        if constexpr (const_accum) {
+          common_temp =
+              basic::StreamingLoadConst(srcs.common_ptr_ + common_index);
+        } else {
+          common_temp = basic::StreamingLoad(srcs.common_ptr_ + common_index);
+        }
+
+#pragma unroll
+        for (int j = 0; j < num_poly; j++) {
+          const word src_value =
+              basic::StreamingLoad(srcs.ptrs_[j] + src_idx + y_offset);
+          word mult =
+              basic::MultMontgomery(common_temp, src_value, prime, inv_prime);
+          result[j] = basic::Add(result[j], mult, prime);
+        }
+      }(),
+      ...);
+
+#pragma unroll
+  for (int j = 0; j < num_poly; j++) {
+    dst.ptrs_[j][i] = result[j];
+  }
+}
+
 // dst = permute(src1, r1) + permute(src2, r2) + ... + permute(src_last,
 // r_last); {src1, r1} embedded in a single PtrList
 template <typename word, int num_poly, typename... PtrLists>
@@ -1054,6 +1191,232 @@ void ElementWiseHandler<word>::PermuteAccum(
     }
     prev_accum = &dst_const_view;
   }
+}
+
+template <typename word>
+void ElementWiseHandler<word>::PermutePAccum(
+    std::vector<DvView<word>> &dst, const NPInfo &np,
+    const std::vector<int> &permute_amounts,
+    const std::vector<std::vector<DvConstView<word>>> &ct_srcs,
+    const std::vector<DvConstView<word>> &pt_srcs) const {
+  PermuteCPAccumWorker<false>(dst, np, permute_amounts, ct_srcs, pt_srcs);
+}
+
+template <typename word>
+template <bool const_accum>
+void ElementWiseHandler<word>::PermuteCPAccumWorker(
+    std::vector<DvView<word>> &dst, const NPInfo &np,
+    const std::vector<int> &permute_amounts,
+    const std::vector<std::vector<DvConstView<word>>> &ct_srcs,
+    const std::vector<DvConstView<word>> &common_srcs) const {
+  int num_poly = dst.size();
+  AssertTrue(num_poly > 0 && num_poly <= max_num_poly_,
+             "PermuteCPAccum: Invalid number of polynomials");
+
+  int num_accum = permute_amounts.size();
+  bool has_extra_ct = (ct_srcs.size() == common_srcs.size() + 1);
+  AssertTrue(num_accum == static_cast<int>(common_srcs.size()),
+             "PermuteCPAccum: Incompatible permute/common size");
+  AssertTrue(num_accum == static_cast<int>(ct_srcs.size()) || has_extra_ct,
+             "PermuteCPAccum: Incompatible ct/common size");
+
+  if (num_accum > max_num_accum_) {
+    std::vector<DeviceVector<word>> temp;
+    std::vector<DvView<word>> temp_view;
+    std::vector<DvConstView<word>> temp_const_view;
+    for (int i = 0; i < num_poly; i++) {
+      int aux_size = dst.at(i).AuxSize();
+      temp.emplace_back(dst.at(i).TotalSize());
+      temp_view.push_back(temp.at(i).View(aux_size));
+      temp_const_view.push_back(temp.at(i).ConstView(aux_size));
+    }
+
+    std::vector<std::vector<DvConstView<word>>> ct_srcs_front(
+        ct_srcs.begin(), ct_srcs.begin() + max_num_accum_);
+    ct_srcs_front.push_back(temp_const_view);
+    std::vector<std::vector<DvConstView<word>>> ct_srcs_back(
+        ct_srcs.begin() + max_num_accum_, ct_srcs.end());
+    std::vector<DvConstView<word>> common_srcs_front(
+        common_srcs.begin(), common_srcs.begin() + max_num_accum_);
+    std::vector<DvConstView<word>> common_srcs_back(
+        common_srcs.begin() + max_num_accum_, common_srcs.end());
+    std::vector<int> permute_front(permute_amounts.begin(),
+                                   permute_amounts.begin() + max_num_accum_);
+    std::vector<int> permute_back(permute_amounts.begin() + max_num_accum_,
+                                  permute_amounts.end());
+
+    PermuteCPAccumWorker<const_accum>(temp_view, np, permute_back, ct_srcs_back,
+                                      common_srcs_back);
+    PermuteCPAccumWorker<const_accum>(dst, np, permute_front, ct_srcs_front,
+                                      common_srcs_front);
+    return;
+  }
+
+  AssertTrue(num_accum > 0, "PermuteCPAccum: Invalid number of accumulations");
+  for (int i = 0; i < num_accum; i++) {
+    const auto &ct_src = ct_srcs.at(i);
+    AssertTrue(num_poly == static_cast<int>(ct_src.size()),
+               "PermuteCPAccum: Incompatible dst/ct_src size");
+    for (int j = 0; j < num_poly; j++) {
+      AssertTrue(dst.at(j).data() != ct_src.at(j).data(),
+                 "PermuteCPAccum does not support inplace operation");
+    }
+  }
+
+  AssertNPMatch(dst, np);
+
+  const word *primes = param_.GetPrimesPtr(np);
+  const make_signed_t<word> *inv_primes = param_.GetInvPrimesPtr(np);
+  int num_q_primes = np.GetNumQ();
+  int q_size = num_q_primes * param_.degree_;
+  int grid_dim = np.GetNumTotal() * param_.degree_ / kernel_block_dim_;
+
+  constexpr_for<1, max_num_poly_ + 1>([&](auto j) {
+    if (num_poly != j) return;
+
+    OutputPtrList<word, j> dst_ptr_list(dst);
+    std::vector<PermuteCPAccumInputPtrList<word, j>> src_ptr_list;
+    for (int i = 0; i < num_accum; i++) {
+      const auto &ct_src_i = ct_srcs.at(i);
+      const auto &common_src_i = common_srcs.at(i);
+      src_ptr_list.emplace_back(ct_src_i, common_src_i);
+      src_ptr_list.back().extra_ = ct_src_i.at(0).QSize() - q_size;
+      src_ptr_list.back().galois_factor_ =
+          PermuteAmountToGaloisFactor(permute_amounts.at(i));
+      src_ptr_list.back().common_extra_ = common_src_i.QSize();
+      if constexpr (const_accum) {
+        src_ptr_list.back().common_extra_ -= num_q_primes;
+      } else {
+        src_ptr_list.back().common_extra_ -= q_size;
+      }
+    }
+
+    if (has_extra_ct) {
+      InputPtrList<word, j> src0(ct_srcs.back());
+      src0.extra_ = ct_srcs.back().at(0).QSize() - q_size;
+      switch (num_accum) {
+        case 1:
+          kernel::PermuteCPAccumAdd<word, j, const_accum>
+              <<<grid_dim, kernel_block_dim_>>>(dst_ptr_list, primes,
+                                                inv_primes, num_q_primes, src0,
+                                                src_ptr_list[0]);
+          break;
+        case 2:
+          kernel::PermuteCPAccumAdd<word, j, const_accum>
+              <<<grid_dim, kernel_block_dim_>>>(
+                  dst_ptr_list, primes, inv_primes, num_q_primes, src0,
+                  src_ptr_list[0], src_ptr_list[1]);
+          break;
+        case 3:
+          kernel::PermuteCPAccumAdd<word, j, const_accum>
+              <<<grid_dim, kernel_block_dim_>>>(
+                  dst_ptr_list, primes, inv_primes, num_q_primes, src0,
+                  src_ptr_list[0], src_ptr_list[1], src_ptr_list[2]);
+          break;
+        case 4:
+          kernel::PermuteCPAccumAdd<word, j, const_accum>
+              <<<grid_dim, kernel_block_dim_>>>(
+                  dst_ptr_list, primes, inv_primes, num_q_primes, src0,
+                  src_ptr_list[0], src_ptr_list[1], src_ptr_list[2],
+                  src_ptr_list[3]);
+          break;
+        case 5:
+          kernel::PermuteCPAccumAdd<word, j, const_accum>
+              <<<grid_dim, kernel_block_dim_>>>(
+                  dst_ptr_list, primes, inv_primes, num_q_primes, src0,
+                  src_ptr_list[0], src_ptr_list[1], src_ptr_list[2],
+                  src_ptr_list[3], src_ptr_list[4]);
+          break;
+        case 6:
+          kernel::PermuteCPAccumAdd<word, j, const_accum>
+              <<<grid_dim, kernel_block_dim_>>>(
+                  dst_ptr_list, primes, inv_primes, num_q_primes, src0,
+                  src_ptr_list[0], src_ptr_list[1], src_ptr_list[2],
+                  src_ptr_list[3], src_ptr_list[4], src_ptr_list[5]);
+          break;
+        case 7:
+          kernel::PermuteCPAccumAdd<word, j, const_accum>
+              <<<grid_dim, kernel_block_dim_>>>(
+                  dst_ptr_list, primes, inv_primes, num_q_primes, src0,
+                  src_ptr_list[0], src_ptr_list[1], src_ptr_list[2],
+                  src_ptr_list[3], src_ptr_list[4], src_ptr_list[5],
+                  src_ptr_list[6]);
+          break;
+        case 8:
+          kernel::PermuteCPAccumAdd<word, j, const_accum>
+              <<<grid_dim, kernel_block_dim_>>>(
+                  dst_ptr_list, primes, inv_primes, num_q_primes, src0,
+                  src_ptr_list[0], src_ptr_list[1], src_ptr_list[2],
+                  src_ptr_list[3], src_ptr_list[4], src_ptr_list[5],
+                  src_ptr_list[6], src_ptr_list[7]);
+          break;
+        default:
+          Fail("PermuteCPAccum: Invalid number of accumulations");
+          break;
+      }
+    } else {
+      switch (num_accum) {
+        case 1:
+          kernel::PermuteCPAccum<word, j, const_accum>
+              <<<grid_dim, kernel_block_dim_>>>(dst_ptr_list, primes,
+                                                inv_primes, num_q_primes,
+                                                src_ptr_list[0]);
+          break;
+        case 2:
+          kernel::PermuteCPAccum<word, j, const_accum>
+              <<<grid_dim, kernel_block_dim_>>>(
+                  dst_ptr_list, primes, inv_primes, num_q_primes,
+                  src_ptr_list[0], src_ptr_list[1]);
+          break;
+        case 3:
+          kernel::PermuteCPAccum<word, j, const_accum>
+              <<<grid_dim, kernel_block_dim_>>>(
+                  dst_ptr_list, primes, inv_primes, num_q_primes,
+                  src_ptr_list[0], src_ptr_list[1], src_ptr_list[2]);
+          break;
+        case 4:
+          kernel::PermuteCPAccum<word, j, const_accum>
+              <<<grid_dim, kernel_block_dim_>>>(
+                  dst_ptr_list, primes, inv_primes, num_q_primes,
+                  src_ptr_list[0], src_ptr_list[1], src_ptr_list[2],
+                  src_ptr_list[3]);
+          break;
+        case 5:
+          kernel::PermuteCPAccum<word, j, const_accum>
+              <<<grid_dim, kernel_block_dim_>>>(
+                  dst_ptr_list, primes, inv_primes, num_q_primes,
+                  src_ptr_list[0], src_ptr_list[1], src_ptr_list[2],
+                  src_ptr_list[3], src_ptr_list[4]);
+          break;
+        case 6:
+          kernel::PermuteCPAccum<word, j, const_accum>
+              <<<grid_dim, kernel_block_dim_>>>(
+                  dst_ptr_list, primes, inv_primes, num_q_primes,
+                  src_ptr_list[0], src_ptr_list[1], src_ptr_list[2],
+                  src_ptr_list[3], src_ptr_list[4], src_ptr_list[5]);
+          break;
+        case 7:
+          kernel::PermuteCPAccum<word, j, const_accum>
+              <<<grid_dim, kernel_block_dim_>>>(
+                  dst_ptr_list, primes, inv_primes, num_q_primes,
+                  src_ptr_list[0], src_ptr_list[1], src_ptr_list[2],
+                  src_ptr_list[3], src_ptr_list[4], src_ptr_list[5],
+                  src_ptr_list[6]);
+          break;
+        case 8:
+          kernel::PermuteCPAccum<word, j, const_accum>
+              <<<grid_dim, kernel_block_dim_>>>(
+                  dst_ptr_list, primes, inv_primes, num_q_primes,
+                  src_ptr_list[0], src_ptr_list[1], src_ptr_list[2],
+                  src_ptr_list[3], src_ptr_list[4], src_ptr_list[5],
+                  src_ptr_list[6], src_ptr_list[7]);
+          break;
+        default:
+          Fail("PermuteCPAccum: Invalid number of accumulations");
+          break;
+      }
+    }
+  });
 }
 
 template <typename word>
