@@ -1,5 +1,8 @@
 #include "extension/BootParameter.h"
 
+#include <fstream>
+#include <string>
+
 #include "common/Assert.h"
 #include "common/CommonUtils.h"
 
@@ -42,6 +45,66 @@ std::vector<double> GetLattigoArcSineInvCoefficients() {
       0.0013353634183014558454, 0.0, 0.0011638246392706364186, 0.0,
       0.0010261053902902777757, 0.0, 0.0009135553688481817804, 0.0,
       0.00082017470922453758363, 0.0, 0.00074168487146003882563};
+}
+std::vector<double> GetRbootArcSineInvCoefficients() {
+  return {
+      2.2947379471529383e-76,
+      0.15897595311853102,
+      -1.1608808021533176e-73,
+      0.056648697109133325,
+      9.784603819485137e-72,
+      -1.4962576928053792,
+      -3.2702674279438225e-70,
+      35.36207430840635,
+      5.755189054177658e-69,
+      -471.07953431217396,
+      -6.138599541215887e-68,
+      3964.616162932087,
+      4.3063391773465814e-67,
+      -22459.541248865153,
+      -2.090847449715923e-66,
+      89123.73190201868,
+      7.256398025527743e-66,
+      -253768.6323381668,
+      -1.8350287759899357e-65,
+      524776.798010636,
+      3.4109554196316153e-65,
+      -789109.6019835931,
+      -4.6549606705774714e-65,
+      853745.4329042521,
+      4.606753911262662e-65,
+      -647273.7032466943,
+      -3.2156205379114237e-65,
+      326301.26986669056,
+      1.5006065588780183e-65,
+      -98218.98433174714,
+      -4.2005464365314363e-66,
+      13355.85355820468,
+  };
+}
+
+std::vector<double> GetRbootArcSinePowerCoefficients() {
+  static constexpr const char *kCoeffPath =
+      "/root/app/cheddar-fhe/backup/RBOOT-artifact/result/"
+      "arcsin127_original_power.txt";
+
+  std::ifstream input(kCoeffPath);
+  AssertTrue(input.is_open(),
+             "Failed to open RBOOT arcsine coefficient file: " +
+                 std::string(kCoeffPath));
+
+  std::vector<double> coeffs;
+  std::string line;
+  while (std::getline(input, line)) {
+    if (line.empty()) {
+      continue;
+    }
+    coeffs.push_back(std::stod(line));
+  }
+  AssertTrue(!coeffs.empty(),
+             "No coefficients loaded from RBOOT arcsine file: " +
+                 std::string(kCoeffPath));
+  return coeffs;
 }
 
 std::vector<double> GetMainModCoefficients(EvalModMode mode) {
