@@ -54,15 +54,19 @@ BootContext<word>::BootContext(const Parameter<word> &param,
   // range
   double level_zero_scale = param.base_scale_;
   int log_level_zero_scale = Log2Scale(level_zero_scale);
-
+  std::cout<<"the log2 level zero scale is "<<log_level_zero_scale<<std::endl;
   std::vector<word> q0 = param.GetPrimeVector(param.LevelToNP(-1));
   double q0_prod = 1.0;
   for (word q : q0) {
     q0_prod *= q;
   }
   int log_q0_prod = Log2Scale(q0_prod);
+  std::cout<<"the log2 log_q0_prod is "<<log_q0_prod<<std::endl;
+
   log_scaleup_ =
       (log_q0_prod - log_level_zero_scale) - boot_param.log_message_ratio_;
+  std::cout<<"the log2 log_scaleup_ is "<<log_scaleup_<<std::endl;
+
   AssertTrue(log_scaleup_ >= 0, "Invalid level zero scaleup");
   level_zero_scale *= (1 << log_scaleup_);
 
@@ -72,6 +76,8 @@ BootContext<word>::BootContext(const Parameter<word> &param,
   int log_eval_mod_start_scale =
       Log2Scale(param.GetRescalePrimeProd(boot_param.GetEvalModStartLevel()));
   int actual_K = (1 << boot_param.num_double_angle_) * boot_param.initial_K_;
+  std::cout<<"the log_eval_mod_start_scale is"<<log_eval_mod_start_scale<<std::endl;
+  std::cout<<"the actual_K is"<<actual_K<<std::endl;
 
   double eval_mod_end_scale = (UINT64_C(1) << log_eval_mod_start_scale);
   int eval_mod_scale_levels = boot_param.GetNumEvalModScaleLevels();
@@ -79,7 +85,11 @@ BootContext<word>::BootContext(const Parameter<word> &param,
   for (int i = 0; i < eval_mod_scale_levels; i++) {
     eval_mod_end_scale = eval_mod_end_scale * eval_mod_end_scale /
                          param.GetRescalePrimeProd(eval_mod_start_level - i);
+    std::cout<<"the log2 param.GetRescalePrimeProd(eval_mod_start_level - i) is "<<param.GetRescalePrimeProd(eval_mod_start_level - i)<<std::endl;
+
   }
+  std::cout<<"the log2 of eval_mod_end_scale is "<<Log2Scale(eval_mod_end_scale)<<std::endl;
+  
 
   // See the development notes for details
   cts_const_ =
@@ -427,6 +437,77 @@ void BootContext<word>::SlimBoot(Ct &res, const Ct &input,
 
   res.SetNumSlots(input_num_slots);
   res.SetScale(this->param_.GetScale(stc_start_level));
+}
+
+template <typename word>
+void BootContext<word>::PrepareSlimBootPostCtS(Ct &res, const Ct &input,
+                                               const EvkMap<word> &evk_map,
+                                               bool min_ks) const {
+  int half_degree = this->param_.degree_ / 2;
+  int input_num_slots = input.GetNumSlots();
+  int num_slots = GetBootEnabledNumSlots(input_num_slots);
+  int stc_start_level = boot_param_.GetStCStartLevel();
+  AssertTrue(eval_mod_ != nullptr, "EvalMod not prepared");
+
+  int input_level = this->param_.NPToLevel(input.GetNP());
+  AssertTrue(input_level >= stc_start_level,
+             "SlimBoot requires input level >= SlotToCoeff start level");
+  if (input_level > stc_start_level) {
+    this->LevelDown(res, input, stc_start_level);
+  } else {
+    this->Copy(res, input);
+  }
+
+  eval_fft_.at(num_slots).EvaluateStC(GetContext(), res, res, evk_map, min_ks);
+
+  int coeff_level = this->param_.NPToLevel(res.GetNP());
+  if (coeff_level > 0) {
+    this->LevelDown(res, res, 0);
+  }
+
+  NPInfo min_np = this->param_.LevelToNP(-1);
+  AssertTrue(min_np.IsSubsetOf(res.GetNP()),
+             "PrepareSlimBootPostCtS: Invalid input NP");
+  this->MultUnsafe(res, res, scaleup_const_, -1);
+
+  ModUpToMax(res, res, evk_map);
+  res.SetNumSlots(half_degree);
+  Trace(res, num_slots, (half_degree / num_slots), res, evk_map);
+  res.SetNumSlots(num_slots);
+
+  CoeffToSlot(res, num_slots, res, evk_map, min_ks);
+  res.SetScale(eval_mod_->start_scale_);
+}
+
+template <typename word>
+void BootContext<word>::PrepareSlimBootEvalModInputs(
+    std::vector<Ct> &res, const Ct &input, const EvkMap<word> &evk_map,
+    bool min_ks) const {
+  int half_degree = this->param_.degree_ / 2;
+  int input_num_slots = input.GetNumSlots();
+  int num_slots = GetBootEnabledNumSlots(input_num_slots);
+  bool full_slot = (num_slots == half_degree);
+
+  Ct main_ct;
+  PrepareSlimBootPostCtS(main_ct, input, evk_map, min_ks);
+
+  res.clear();
+  if (full_slot) {
+    Ct ct_conj;
+    Ct real_branch;
+    Ct imag_branch;
+    this->HConj(ct_conj, main_ct, evk_map.GetConjugationKey());
+    this->Add(real_branch, main_ct, ct_conj);
+    this->Sub(imag_branch, ct_conj, main_ct);
+    this->MultImaginaryUnit(imag_branch, imag_branch);
+    res.emplace_back(std::move(real_branch));
+    res.emplace_back(std::move(imag_branch));
+    return;
+  }
+
+  Ct merged_branch;
+  this->HConjAdd(merged_branch, main_ct, main_ct, evk_map.GetConjugationKey());
+  res.emplace_back(std::move(merged_branch));
 }
 
 template <typename word>

@@ -218,6 +218,8 @@ class Testbed : public testing::TestWithParam<const char *> {
           eval_mod_mode = EvalModMode::kLegacy;
         } else if (evalmod_mode == "lattigo_arcsine") {
           eval_mod_mode = EvalModMode::kLattigoArcSine;
+        } else if (evalmod_mode == "rboot_arcsine") {
+          eval_mod_mode = EvalModMode::kRbootArcSine;
         } else {
           Check(false, "Unsupported evalmod_mode: " + evalmod_mode);
         }

@@ -7,6 +7,7 @@ namespace cheddar {
 enum class EvalModMode {
   kLegacy,
   kLattigoArcSine,
+  kRbootArcSine,
 };
 
 /**
@@ -39,6 +40,7 @@ struct BootParameter {
   // one of them requires changing the others.
   // TODO (jongmin.kim): Allow changing these parameters
   const std::vector<double> mod_coefficients_;
+  const std::vector<double> mod_aux_coefficients_;
   const std::vector<double> mod_inv_coefficients_;
   const int num_double_angle_;
   const int initial_K_;
@@ -67,6 +69,7 @@ struct BootParameter {
   int GetNumEvalModLevels() const;
 
   bool UseLattigoArcSine() const;
+  bool UseRbootArcSine() const;
 
   /**
    * @brief Get the maximum level

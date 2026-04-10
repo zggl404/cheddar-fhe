@@ -1,5 +1,6 @@
 .ipynb_checkpoints
 build/
+build_dbg/*
 dist-prepared/
 backup/
 .vscode/

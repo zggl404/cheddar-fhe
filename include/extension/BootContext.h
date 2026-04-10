@@ -151,6 +151,25 @@ class BootContext : public Context<word>,
                 bool min_ks = false) const;
 
   /**
+   * @brief Prepare the ciphertext(s) that feed EvalMod inside SlimBoot.
+   *
+   * For full-slot bootstrapping, the returned vector contains two ciphertexts:
+   * the real branch input followed by the imaginary branch input. Otherwise it
+   * contains a single merged branch input.
+   */
+  void PrepareSlimBootEvalModInputs(std::vector<Ct> &res, const Ct &input,
+                                    const EvkMap<word> &evk_map,
+                                    bool min_ks = false) const;
+
+  /**
+   * @brief Prepare the ciphertext immediately after the CtS step inside
+   * SlimBoot and before any real/imag branch split for EvalMod.
+   */
+  void PrepareSlimBootPostCtS(Ct &res, const Ct &input,
+                              const EvkMap<word> &evk_map,
+                              bool min_ks = false) const;
+
+  /**
    * @brief Applies the coefficient-to-slot linear transform used by
    * bootstrapping. This is exposed so advanced pipelines can reuse the
    * prepared FFT stages directly.

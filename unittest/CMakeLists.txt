@@ -51,11 +51,8 @@ configure_file(${CMAKE_SOURCE_DIR}/parameters/bootparam_35.json
 configure_file(${CMAKE_SOURCE_DIR}/parameters/bootparam_40.json
                ${CMAKE_CURRENT_BINARY_DIR}/bootparam_40.json COPYONLY)
 
-configure_file(${CMAKE_SOURCE_DIR}/parameters/bootparam_48.json
-               ${CMAKE_CURRENT_BINARY_DIR}/bootparam_48.json COPYONLY)
-
-configure_file(${CMAKE_SOURCE_DIR}/parameters/bootparam_45_arcsin.json
-               ${CMAKE_CURRENT_BINARY_DIR}/bootparam_45_arcsin.json COPYONLY)
 
 configure_file(${CMAKE_SOURCE_DIR}/parameters/bootparam_40_64bit.json
                ${CMAKE_CURRENT_BINARY_DIR}/bootparam_40_64bit.json COPYONLY)
+
+ 

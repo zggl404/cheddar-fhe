@@ -1,11 +1,42 @@
 #include "extension/EvalPoly.h"
 
+#include <cmath>
+#include <cstdlib>
+#include <iomanip>
+#include <iostream>
+#include <string>
+
 #include "common/Assert.h"
 #include "common/CommonUtils.h"
 
 namespace {
 
 using namespace cheddar;
+
+bool EvalModTraceEnabled() {
+  static const bool enabled = []() {
+    const char *env = std::getenv("CHEDDAR_EVALMOD_TRACE");
+    return env != nullptr && env[0] != '\0' && std::string(env) != "0";
+  }();
+  return enabled;
+}
+
+inline double ScaleLog2(double scale) { return std::log2(scale); }
+
+template <typename word>
+void TraceEvalPolyScale(ConstContextPtr<word> context, const std::string &label,
+                        const Ciphertext<word> &ct, int expected_level,
+                        double expected_scale) {
+  if (!EvalModTraceEnabled()) return;
+  const int level = context->param_.NPToLevel(ct.GetNP());
+  std::cout << std::setprecision(17) << "[EvalPolyTrace] " << label
+            << " actual_level=" << level
+            << " expected_level=" << expected_level
+            << " actual_log2(scale)=" << ScaleLog2(ct.GetScale())
+            << " expected_log2(scale)=" << ScaleLog2(expected_scale)
+            << " actual_scale=" << ct.GetScale()
+            << " expected_scale=" << expected_scale << std::endl;
+}
 
 template <typename T>
 void RemoveZero(std::vector<T> &coefficients) {
@@ -108,6 +139,22 @@ template <typename word>
 void AXYPBZ<word>::AssertSameLevelAndScale(ConstContextPtr<word> context,
                                            const Ct &ct, int level,
                                            double scale) const {
+  if (EvalModTraceEnabled()) {
+    const int actual_level = context->param_.NPToLevel(ct.GetNP());
+    const double actual_scale = ct.GetScale();
+    const double diff = std::abs(actual_scale - scale);
+    if (actual_level != level || !std::isfinite(actual_scale) ||
+        !std::isfinite(scale) || !std::isfinite(diff) ||
+        diff >= 1e-12 * actual_scale) {
+      std::cerr << std::setprecision(17)
+                << "[AXYPBZCheck] actual_level=" << actual_level
+                << " expected_level=" << level
+                << " actual_log2(scale)=" << ScaleLog2(actual_scale)
+                << " expected_log2(scale)=" << ScaleLog2(scale)
+                << " actual_scale=" << actual_scale
+                << " expected_scale=" << scale << std::endl;
+    }
+  }
   AssertTrue(ct.GetNP() == context->param_.LevelToNP(level), "Level mismatch");
   context->AssertSameScale(ct, scale);
 }
@@ -150,6 +197,15 @@ AXYPBZ<word>::AXYPBZ(ConstContextPtr<word> context, int a, double b,
   final_level_ = working_level - 1;
   final_scale_ =
       working_scale / context->param_.GetRescalePrimeProd(working_level);
+  if (EvalModTraceEnabled() &&
+      (!std::isfinite(working_scale) || !std::isfinite(final_scale_))) {
+    std::cerr << std::setprecision(17)
+              << "[AXYPBZCompile] with_z x_level=" << x_level_
+              << " y_level=" << y_level_ << " z_level=" << z_level_
+              << " x_scale=" << x_scale_ << " y_scale=" << y_scale_
+              << " z_scale=" << z_scale_ << " final_scale=" << final_scale_
+              << std::endl;
+  }
 }
 
 // a * x * y + b
@@ -187,6 +243,14 @@ AXYPBZ<word>::AXYPBZ(ConstContextPtr<word> context, int a, double b,
   final_level_ = working_level - 1;
   final_scale_ =
       working_scale / context->param_.GetRescalePrimeProd(working_level);
+  if (EvalModTraceEnabled() &&
+      (!std::isfinite(working_scale) || !std::isfinite(final_scale_))) {
+    std::cerr << std::setprecision(17)
+              << "[AXYPBZCompile] no_z x_level=" << x_level_
+              << " y_level=" << y_level_ << " x_scale=" << x_scale_
+              << " y_scale=" << y_scale_ << " final_scale=" << final_scale_
+              << std::endl;
+  }
 }
 
 template <typename word>
@@ -349,6 +413,22 @@ void BasisMap<word>::AddBase(ConstContextPtr<word> context, int base_degree) {
     basis_eval_.try_emplace(base_degree, context, 1, 0, left_level, left_scale,
                             right_level, right_scale);
   }
+
+  if (EvalModTraceEnabled()) {
+    const auto &eval = basis_eval_.at(base_degree);
+    if (!std::isfinite(eval.x_scale_) || !std::isfinite(eval.y_scale_) ||
+        !std::isfinite(eval.final_scale_)) {
+      std::cerr << std::setprecision(17)
+                << "[BasisMapCompile] base_degree=" << base_degree
+                << " left_degree=" << left_degree
+                << " right_degree=" << right_degree
+                << " x_level=" << eval.x_level_
+                << " y_level=" << eval.y_level_
+                << " x_scale=" << eval.x_scale_
+                << " y_scale=" << eval.y_scale_
+                << " final_scale=" << eval.final_scale_ << std::endl;
+    }
+  }
 }
 
 template <typename word>
@@ -503,9 +583,8 @@ void EvalPolyNode<word>::Compile(ConstContextPtr<word> context,
     auto [_, split_scale] = basis_eval.GetBaseLevelAndScale(split_degree_);
     double high_scale = working_scale / split_scale;
     if (is_high_constant_) {
-      context->encoder_.EncodeConstant(high_constant_, high_scale,
-                                       working_level,
-                                       coefficients_[split_degree_]);
+      context->encoder_.EncodeConstant(high_constant_, working_level,
+                                       high_scale, coefficients_[split_degree_]);
     } else {
       high_->Compile(context, basis_eval, working_level, high_scale, true);
     }
@@ -823,6 +902,7 @@ void EvalPoly<word>::Evaluate(ConstContextPtr<word> context, Ct &res,
                               const Ct &input, const Evk &mult_key) const {
   AssertTrue(tree_root_ != nullptr, "EvalPoly: not compiled.");
   NPInfo np = input.GetNP();
+  TraceEvalPolyScale(context, "entry", input, input_level_, input_scale_);
   AssertTrue(context->param_.NPToLevel(np) == input_level_,
              "EvalPoly: input level does not match the compiled level.");
   AssertTrue(np.num_aux_ == 0, "ModDown required before EvalPoly evaluation");
@@ -839,6 +919,8 @@ void EvalPoly<word>::Evaluate(ConstContextPtr<word> context, Ct &res,
   basis_map_.Evaluate(context, basis, mult_key);
   tree_root_->Evaluate(context, res, basis, mult_key);
   // To avoid double calculation errors, manually set target scale
+  TraceEvalPolyScale(context, "exit", res,
+                     context->param_.NPToLevel(res.GetNP()), target_scale_);
   context->AssertSameScale(res, target_scale_);
   res.SetScale(target_scale_);
 }

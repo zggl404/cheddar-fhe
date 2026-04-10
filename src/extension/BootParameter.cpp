@@ -6,171 +6,313 @@
 #include "common/Assert.h"
 #include "common/CommonUtils.h"
 
-namespace cheddar {
+namespace cheddar
+{
 
-namespace {
+  namespace
+  {
 
-std::vector<double> GetLegacyModCoefficients() {
-  return {
-      0.12517186708929745802,    0.0, 0.2894364973331168731,      0.0,
-      0.36272381596524499154,    0.0, 0.3011054704600794278,      0.0,
-      -0.10550875667295944105,   0.0, -0.43588877795190139706,    0.0,
-      0.37482647434055190702,    0.0, -0.14821069913569220404,    0.0,
-      0.03665437786710548091,    0.0, -0.0063882548960017121343,  0.0,
-      0.00083684232451067872756, 0.0, -8.6443599931576702305e-05, 0.0,
-      7.0966437900548814324e-06, 0.0, -5.228015817181348194e-07,  0.0,
-      2.2714690137973883081e-08, 0.0, -2.3761936068138980797e-09};
-}
-
-std::vector<double> GetLattigoArcSineMainCoefficients() {
-  return {
-      0.1574995124897762,       0.0, 0.3641881221935696078,   0.0,
-      0.45640306812873338016,   0.0, 0.3788707950775793698,   0.0,
-      -0.13275808794590060469,  0.0, -0.54846405684923060786, 0.0,
-      0.47163143244306682256,   0.0, -0.18648849300128653161, 0.0,
-      0.04612095975660945868,   0.0, -0.0080381243419730373512, 0.0,
-      0.0010529702976086105764, 0.0, -0.000108769048218892368, 0.0,
-      8.9294660472697342407e-06, 0.0, -6.5782348833023447923e-07, 0.0,
-      2.8581123748317920157e-08, 0.0, -2.9898837762603866616e-09};
-}
-
-// Lattigo's ArcSine branch uses a monomial-basis asin(x)/(2*pi) polynomial.
-std::vector<double> GetLattigoArcSineInvCoefficients() {
-  return {
-      0.0, 0.15915494309189533577, 0.0, 0.026525823848649222628, 0.0,
-      0.011936620731892150183, 0.0, 0.0071051313880310417754, 0.0,
-      0.0048354366390766812083, 0.0, 0.0035606397069564652534, 0.0,
-      0.0027617782342418736901, 0.0, 0.0022225739123184602554, 0.0,
-      0.0018385262142340204318, 0.0, 0.0015536084091041868561, 0.0,
-      0.0013353634183014558454, 0.0, 0.0011638246392706364186, 0.0,
-      0.0010261053902902777757, 0.0, 0.0009135553688481817804, 0.0,
-      0.00082017470922453758363, 0.0, 0.00074168487146003882563};
-}
-std::vector<double> GetRbootArcSineInvCoefficients() {
-  return {
-      2.2947379471529383e-76,
-      0.15897595311853102,
-      -1.1608808021533176e-73,
-      0.056648697109133325,
-      9.784603819485137e-72,
-      -1.4962576928053792,
-      -3.2702674279438225e-70,
-      35.36207430840635,
-      5.755189054177658e-69,
-      -471.07953431217396,
-      -6.138599541215887e-68,
-      3964.616162932087,
-      4.3063391773465814e-67,
-      -22459.541248865153,
-      -2.090847449715923e-66,
-      89123.73190201868,
-      7.256398025527743e-66,
-      -253768.6323381668,
-      -1.8350287759899357e-65,
-      524776.798010636,
-      3.4109554196316153e-65,
-      -789109.6019835931,
-      -4.6549606705774714e-65,
-      853745.4329042521,
-      4.606753911262662e-65,
-      -647273.7032466943,
-      -3.2156205379114237e-65,
-      326301.26986669056,
-      1.5006065588780183e-65,
-      -98218.98433174714,
-      -4.2005464365314363e-66,
-      13355.85355820468,
-  };
-}
-
-std::vector<double> GetRbootArcSinePowerCoefficients() {
-  static constexpr const char *kCoeffPath =
-      "/root/app/cheddar-fhe/backup/RBOOT-artifact/result/"
-      "arcsin127_original_power.txt";
-
-  std::ifstream input(kCoeffPath);
-  AssertTrue(input.is_open(),
-             "Failed to open RBOOT arcsine coefficient file: " +
-                 std::string(kCoeffPath));
-
-  std::vector<double> coeffs;
-  std::string line;
-  while (std::getline(input, line)) {
-    if (line.empty()) {
-      continue;
+    std::vector<double> ScaleCoefficients(const std::vector<double> &coefficients,
+                                          double scale)
+    {
+      std::vector<double> scaled = coefficients;
+      for (double &coeff : scaled)
+      {
+        coeff *= scale;
+      }
+      return scaled;
     }
-    coeffs.push_back(std::stod(line));
+
+    std::vector<double> GetLegacyModCoefficients()
+    {
+      return {
+          0.12517186708929745802, 0.0, 0.2894364973331168731, 0.0,
+          0.36272381596524499154, 0.0, 0.3011054704600794278, 0.0,
+          -0.10550875667295944105, 0.0, -0.43588877795190139706, 0.0,
+          0.37482647434055190702, 0.0, -0.14821069913569220404, 0.0,
+          0.03665437786710548091, 0.0, -0.0063882548960017121343, 0.0,
+          0.00083684232451067872756, 0.0, -8.6443599931576702305e-05, 0.0,
+          7.0966437900548814324e-06, 0.0, -5.228015817181348194e-07, 0.0,
+          2.2714690137973883081e-08, 0.0, -2.3761936068138980797e-09};
+    }
+
+    std::vector<double> GetArcSineMainCoefficients()
+    {
+      return {
+          0.1574995124897762, 0.0, 0.3641881221935696078, 0.0,
+          0.45640306812873338016, 0.0, 0.3788707950775793698, 0.0,
+          -0.13275808794590060469, 0.0, -0.54846405684923060786, 0.0,
+          0.47163143244306682256, 0.0, -0.18648849300128653161, 0.0,
+          0.04612095975660945868, 0.0, -0.0080381243419730373512, 0.0,
+          0.0010529702976086105764, 0.0, -0.000108769048218892368, 0.0,
+          8.9294660472697342407e-06, 0.0, -6.5782348833023447923e-07, 0.0,
+          2.8581123748317920157e-08, 0.0, -2.9898837762603866616e-09};
+    }
+
+    // Lattigo's ArcSine branch uses a monomial-basis asin(x)/(2*pi) polynomial.
+    std::vector<double> GetArcSineInvCoefficients()
+    {
+      return {
+          0.0, 0.15915494309189533577, 0.0, 0.026525823848649222628, 0.0,
+          0.011936620731892150183, 0.0, 0.0071051313880310417754, 0.0,
+          0.0048354366390766812083, 0.0, 0.0035606397069564652534, 0.0,
+          0.0027617782342418736901, 0.0, 0.0022225739123184602554, 0.0,
+          0.0018385262142340204318, 0.0, 0.0015536084091041868561, 0.0,
+          0.0013353634183014558454, 0.0, 0.0011638246392706364186, 0.0,
+          0.0010261053902902777757, 0.0, 0.0009135553688481817804, 0.0,
+          0.00082017470922453758363, 0.0, 0.00074168487146003882563};
+    }
+
+    std::vector<double> GetArcSineChebyshevCoefficients()
+    {
+      return {
+          0.0,
+          0.20263320449484837067248889404365010646029491604224616514284370332140615873973161,
+          0.0,
+          0.022506656825875852625783157035729056345346302888698418832689222816875009255038066,
+          0.0,
+          0.0080965349868346242077000169842366299522059272347843166113034299604910222841158226,
+          0.0,
+          0.0041264018959091089201004722629934377312958612952197503378205786429746987026628448,
+          0.0,
+          0.0024926051120051556290951167179551656059168606324704639353590319283849350965799607,
+          0.0,
+          0.0016655829364194085082715835101798252116199486886207256358468533172466166702822044,
+          0.0,
+          0.0011899260517866605517279226241016890323412869390025905738606373126747597546289748,
+          0.0,
+          0.00089149871744675277473104191689328692655819668685805980410247601648685728963157951,
+          0.0,
+          0.00069205884088927359064256240762546915891456387244505158586664347048952863390623157,
+          0.0,
+          0.00055221960016683851485870276318256869874513701925216768168070729372803632496272487,
+          0.0,
+          0.0004504001443866667853893219835351069613928815699458042621415795538977497883989924,
+          0.0,
+          0.0003739717528833256706078397176664319764342264715155306861295086323819863962278888,
+          0.0,
+          0.00031514494760758038258458821856175597509684383454033999882485211044780369742833705,
+          0.0,
+          0.00026890350018321515493389805370826199330424305800207913226218094356441244208511935,
+          0.0,
+          0.00023189876966016751985785979246572126868926136716725274805506525879531986331142582,
+          0.0,
+          0.00020182612853994392833483796325487206919413462672641451946896372732968793083558834,
+          0.0,
+          0.00017705739825474377146248024483566256640040868424278617410775371051592359505371588,
+          0.0,
+          0.00015641585689946213630213940786621328990664221808960607350299107389301008244291343,
+          0.0,
+          0.00013903394924573028742380848824229722913598505709271637999075567500922570334953193,
+          0.0,
+          0.0001242606967200384171933354537394262954285599755941828494836302793634733178044632,
+          0.0,
+          0.00011159991428197751304564759730086956445095358840313155059558442448363814798674326,
+          0.0,
+          0.00010066805313765394546044050035802509862662167349819077019664157400782427778994316,
+          0.0,
+          0.000091164854738888617111759592863312573610204361349796903912898004616758888202926033,
+          0.0,
+          0.000082852552369798706294536589225984559025644034599260831169457001884534363126678262,
+          0.0,
+          0.0000755408890309234249457638618673003680856041297938853637190358228398318500011068,
+          0.0,
+          0.00006907616435428690781457791915521772477032994227724327703449642027835644350575624,
+          0.0,
+          0.000063333118213824505781497450746607253536549134444095536479916283458582973983351203,
+          0.0,
+          0.000058208841457008566450889726855680124733481108752462939034449610460120639708400842,
+          0.0,
+          0.000053618155133803354010164421771220316403642012232634389506308722692010655256393288,
+          0.0,
+          0.00004949006700245838299536221692127275600015155041403475511444598789782674609032902,
+          0.0,
+          0.000045765027555880443396659458962585001672698592716759213963793206698408820058606698,
+          0.0,
+          0.000042392785856903077032537025682835972584525984040575222323067087503435287249346503,
+          0.0,
+          0.000039330699889117564312748519544134686139351473146702138232981586388938233013580866,
+          0.0,
+          0.000036542394557866564751417517590596290702827330305121221126204948347970774890784353,
+          0.0,
+          0.000033996687934181286763212784414706515360029203364393586227304945317071850860280292,
+          0.0,
+          0.000031666726171660930815266058270564127000229873135836482999472676552929263038773907,
+          0.0,
+          0.000029529282006283956154611577725987093703303330721898007460046628987749357429186441,
+          0.0,
+          0.00002756418242141804261065126253423687783740901068059160424757393813837119002932914,
+          0.0,
+          0.000025753838998004325824308694613927580899117076469953086039256021773974661695887491,
+          0.0,
+          0.000024082860424491587504293439282650854037637801995876179193770194113124677273087515,
+          0.0,
+          0.000022537731144275568223851011072640332566323757701333029293142232874700452506809942,
+          0.0,
+          0.000021106543550044468754904610429169577415087185456533194400251971267044740166180912,
+          0.0,
+          0.000019778773768489088375982008556866211757073990399841067905372286159444084005441221,
+          0.0,
+          0.000018545093114586839284265221615476152264144248258127408686812127338983511611478971,
+          0.0,
+          0.000017397208878286663857077480533095832237355891967057759143130022463695233398372009,
+          0.0,
+          0.000016327729345971193259082435834478382089251443303461054098583825704385310654976856,
+          0.0,
+          0.000015330048935043204541685607032878573883575068370781725569641926760325278439119435,
+          0.0,
+          0.000014398250092754663848354579953431333430105193161370370285371065900546418857455237,
+          0.0,
+          0.000013527019225569376824095980107955226141745704463932465808502623933272357882164411,
+          0.0,
+          0.000012711574417587805234420406552393469340091631711449163710382420076446933065089551,
+          0.0,
+          0.000011947603092377381905058447758377564684661775514762627875156470781928055927804969,
+          0.0,
+          0.000011231208092342195519523496025769317903447608116410759821266287897818168927583811,
+          0.0,
+          0.000010558860909316090155569006033401335397774702965102751991216581725012102410398111,
+          0.0,
+          0.0000099273610116530405779922591600548167218027564200643365744949430984256094406103992,
+          0.0,
+          0.0000093338003863225436047586157032799667638241165202224145427141340660233618120661864,
+          0.0,
+          0.0000087755325569459361711599679093415233983328421624386398756016504570198442314210776,
+          0.0,
+          0.0000082501454562970069286259832077700796790448506868331594526989899055605776709547284,
+          0.0,
+          0.0000077554376292727291354748534150662499618206215235316270473542076915110367221534575,
+          0.0,
+          0.0000072893973234955571935309969985680218907320451621598386935195800902834563567031867,
+          0.0,
+          0.0000068501840925666297129152097052716135630878690179823309510289176910216724708534866,
+          0.0,
+          0.0000064361125939905015798597654138704800939963204523103413556025452311550883800530746,
+          0.0,
+          0.0000060456383119147159419726482876905664479582470045151247564610726083889614414412153,
+          0.0,
+          0.0000056773449756842185835086334182331405001632606783815494190288810233421501445772133,
+          0.0,
+          0.000044820618437586116898993766628039582535725980358396941892533351299647856996315974,
+      };
+    }
+
+    std::vector<double> GetRbootArcSineCosCoefficients()
+    {
+      return ScaleCoefficients(GetArcSineChebyshevCoefficients(), 0.25);
+    }
+
+    std::vector<double> GetRbootArcSineSinCoefficients()
+    {
+      return ScaleCoefficients(GetArcSineInvCoefficients(), 0.5);
+    }
+
+       std::vector<double> GetMainModCoefficients(EvalModMode mode)
+    {
+      if (mode == EvalModMode::kRbootArcSine)
+      {
+        return GetArcSineMainCoefficients();
+      }
+      if (mode == EvalModMode::kLattigoArcSine)
+      {
+        return GetArcSineMainCoefficients();
+      }
+      return GetLegacyModCoefficients();
+    }
+
+    std::vector<double> GetAuxModCoefficients(EvalModMode mode)
+    {
+      if (mode == EvalModMode::kRbootArcSine)
+      {
+        return GetRbootArcSineCosCoefficients();
+      }
+      return {};
+    }
+
+    std::vector<double> GetInvModCoefficients(EvalModMode mode)
+    {
+      if (mode == EvalModMode::kRbootArcSine)
+      {
+        return GetRbootArcSineSinCoefficients();
+      }
+      if (mode == EvalModMode::kLattigoArcSine)
+      {
+        return GetArcSineInvCoefficients();
+      }
+      return {};
+    }
+
+  } // namespace
+
+  BootParameter::BootParameter(int max_level, int num_cts_levels,
+                               int num_stc_levels, int log_message_ratio,
+                               EvalModMode eval_mod_mode)
+      : max_level_{max_level},
+        num_cts_levels_{num_cts_levels},
+        num_stc_levels_{num_stc_levels},
+        log_message_ratio_{log_message_ratio},
+        eval_mod_mode_{eval_mod_mode},
+        mod_coefficients_{GetMainModCoefficients(eval_mod_mode)},
+        mod_aux_coefficients_{GetAuxModCoefficients(eval_mod_mode)},
+        mod_inv_coefficients_{GetInvModCoefficients(eval_mod_mode)},
+        num_double_angle_{3},
+        initial_K_{2}
+  {
+    if (UseLattigoArcSine() || UseRbootArcSine())
+    {
+      AssertTrue(log_message_ratio_ == 5,
+                 "ArcSine-family EvalMod only supports log_message_ratio = 5");
+    }
   }
-  AssertTrue(!coeffs.empty(),
-             "No coefficients loaded from RBOOT arcsine file: " +
-                 std::string(kCoeffPath));
-  return coeffs;
-}
 
-std::vector<double> GetMainModCoefficients(EvalModMode mode) {
-  if (mode == EvalModMode::kLattigoArcSine) {
-    return GetLattigoArcSineMainCoefficients();
+  int BootParameter::GetNumEvalModScaleLevels() const
+  {
+    return Log2Ceil(mod_coefficients_.size()) + num_double_angle_;
   }
-  return GetLegacyModCoefficients();
-}
 
-std::vector<double> GetInvModCoefficients(EvalModMode mode) {
-  if (mode == EvalModMode::kLattigoArcSine) {
-    return GetLattigoArcSineInvCoefficients();
+  int BootParameter::GetNumEvalModInvLevels() const
+  {
+    if (UseRbootArcSine())
+    {
+      return Max(Log2Ceil(mod_aux_coefficients_.size()),
+                 Log2Ceil(mod_inv_coefficients_.size()));
+    }
+    if (mod_inv_coefficients_.empty())
+    {
+      return 0;
+    }
+    return Log2Ceil(mod_inv_coefficients_.size());
   }
-  return {};
-}
 
-}  // namespace
-
-BootParameter::BootParameter(int max_level, int num_cts_levels,
-                             int num_stc_levels, int log_message_ratio,
-                             EvalModMode eval_mod_mode)
-    : max_level_{max_level},
-      num_cts_levels_{num_cts_levels},
-      num_stc_levels_{num_stc_levels},
-      log_message_ratio_{log_message_ratio},
-      eval_mod_mode_{eval_mod_mode},
-      mod_coefficients_{GetMainModCoefficients(eval_mod_mode)},
-      mod_inv_coefficients_{GetInvModCoefficients(eval_mod_mode)},
-      num_double_angle_{3},
-      initial_K_{2} {
-  if (UseLattigoArcSine()) {
-    AssertTrue(log_message_ratio_ == 5,
-               "LattigoArcSine EvalMod only supports log_message_ratio = 5");
+  int BootParameter::GetNumEvalModLevels() const
+  {
+    return GetNumEvalModScaleLevels() + GetNumEvalModInvLevels();
   }
-}
 
-int BootParameter::GetNumEvalModScaleLevels() const {
-  return Log2Ceil(mod_coefficients_.size()) + num_double_angle_;
-}
-
-int BootParameter::GetNumEvalModInvLevels() const {
-  if (mod_inv_coefficients_.empty()) {
-    return 0;
+  bool BootParameter::UseLattigoArcSine() const
+  {
+    return eval_mod_mode_ == EvalModMode::kLattigoArcSine;
   }
-  return Log2Ceil(mod_inv_coefficients_.size());
-}
 
-int BootParameter::GetNumEvalModLevels() const {
-  return GetNumEvalModScaleLevels() + GetNumEvalModInvLevels();
-}
+  bool BootParameter::UseRbootArcSine() const
+  {
+    return eval_mod_mode_ == EvalModMode::kRbootArcSine;
+  }
 
-bool BootParameter::UseLattigoArcSine() const {
-  return eval_mod_mode_ == EvalModMode::kLattigoArcSine;
-}
+  int BootParameter::GetMaxLevel() const { return max_level_; }
+  int BootParameter::GetCtSStartLevel() const { return max_level_; }
+  int BootParameter::GetEvalModStartLevel() const
+  {
+    return max_level_ - num_cts_levels_;
+  }
+  int BootParameter::GetStCStartLevel() const
+  {
+    return GetEvalModStartLevel() - GetNumEvalModLevels();
+  }
+  int BootParameter::GetStartLevel() const { return max_level_; }
+  int BootParameter::GetEndLevel() const
+  {
+    return GetStCStartLevel() - num_stc_levels_;
+  }
 
-int BootParameter::GetMaxLevel() const { return max_level_; }
-int BootParameter::GetCtSStartLevel() const { return max_level_; }
-int BootParameter::GetEvalModStartLevel() const {
-  return max_level_ - num_cts_levels_;
-}
-int BootParameter::GetStCStartLevel() const {
-  return GetEvalModStartLevel() - GetNumEvalModLevels();
-}
-int BootParameter::GetStartLevel() const { return max_level_; }
-int BootParameter::GetEndLevel() const {
-  return GetStCStartLevel() - num_stc_levels_;
-}
-
-}  // namespace cheddar
+} // namespace cheddar
