@@ -16,7 +16,7 @@ TEST_P(Testbed32, EncodeDecode) {
     GenerateRandomMessage(msg1);
 
     Plaintext<word> pt1;
-    Encode(pt1, msg1, level);
+    EncodeGPU(pt1, msg1, level);
 
     std::vector<Complex> res;
     Decode(res, pt1);
@@ -267,6 +267,149 @@ TEST_P(Testbed32, CtMultPt) {
     DecryptAndDecode(res, ct_res);
     CompareMessages(true_res, res, level == param_->max_level_);
   }
+}
+
+TEST_P(Testbed32, CtMultPlainAdd) {
+  for (int level = 1; level <= param_->max_level_; level++) {
+    std::vector<Complex> msg1, msg2, msg3;
+    std::vector<Complex> true_res;
+    GenerateRandomMessage(msg1);
+    GenerateRandomMessage(msg2);
+    GenerateRandomMessage(msg3);
+    for (int i = 0; i < static_cast<int>(msg1.size()); i++) {
+      true_res.push_back(msg1[i] * msg2[i] + msg3[i]);
+    }
+    Ciphertext<word> ct1, ct3, ct_res;
+    Plaintext<word> pt2, pt3;
+
+    std::string name =
+        "CtMultPlainAdd (fused) at level" + std::to_string(level);
+    auto prepare_cts = [&]() {
+      EncodeAndEncrypt(ct1, msg1, level);
+      Encode(pt2, msg2, level);
+      context_->encoder_.Encode(pt3, level,
+                                DetermineScale(level) * DetermineScale(level),
+                                msg3, 0);
+      interface_->Encrypt(ct3, pt3);
+    };
+
+    __ProfileStart(name, warm_up, prepare_cts());
+    context_->MultPlainAdd(ct_res, ct1, pt2, ct3);
+    __ProfileEnd(name);
+
+    std::vector<Complex> res;
+    DecryptAndDecode(res, ct_res);
+    CompareMessages(true_res, res, level == param_->max_level_);
+  }
+}
+
+TEST_P(Testbed32, CtMultPlainAddTensorInput) {
+  for (int level = 2; level <= param_->max_level_; level++) {
+    std::vector<Complex> msg1, msg2, msg3, msg4;
+    std::vector<Complex> true_res;
+    GenerateRandomMessage(msg1);
+    GenerateRandomMessage(msg2);
+    GenerateRandomMessage(msg3);
+    GenerateRandomMessage(msg4);
+    for (int i = 0; i < static_cast<int>(msg1.size()); i++) {
+      true_res.push_back(msg1[i] * msg2[i] * msg3[i] + msg4[i]);
+    }
+
+    Ciphertext<word> ct1, ct2, ct_acc, ct_tensor, ct_ref, ct_ref_rel, ct_res,
+        ct_res_rel;
+    Plaintext<word> pt3, pt4;
+
+    auto prepare_cts = [&]() {
+      EncodeAndEncrypt(ct1, msg1, level);
+      EncodeAndEncrypt(ct2, msg2, level);
+      Encode(pt3, msg3, level);
+      context_->encoder_.Encode(
+          pt4, level,
+          DetermineScale(level) * DetermineScale(level) * DetermineScale(level),
+          msg4, 0);
+      interface_->Encrypt(ct_acc, pt4);
+      context_->Mult(ct_tensor, ct1, ct2);
+    };
+
+    std::string fused_name =
+        "CtMultPlainAdd (tensor input, fused) at level" +
+        std::to_string(level);
+    __ProfileStart(fused_name, warm_up, prepare_cts());
+    context_->MultPlainAdd(ct_res, ct_tensor, pt3, ct_acc);
+    __ProfileEnd(fused_name);
+    context_->Relinearize(ct_res_rel, ct_res, interface_->GetMultiplicationKey());
+
+    std::string ref_name =
+        "CtMultPlainAdd (tensor input, reference) at level" +
+        std::to_string(level);
+    __ProfileStart(ref_name, warm_up, prepare_cts());
+    context_->Mult(ct_ref, ct_tensor, pt3);
+    context_->Add(ct_ref, ct_ref, ct_acc);
+    __ProfileEnd(ref_name);
+    context_->Relinearize(ct_ref_rel, ct_ref, interface_->GetMultiplicationKey());
+
+    std::vector<Complex> fused_res;
+    DecryptAndDecode(fused_res, ct_res_rel);
+    CompareMessages(true_res, fused_res, level == param_->max_level_);
+
+    std::vector<Complex> ref_res;
+    DecryptAndDecode(ref_res, ct_ref_rel);
+    CompareMessages(true_res, ref_res, level == param_->max_level_);
+    CompareMessages(ref_res, fused_res, level == param_->max_level_);
+  }
+}
+
+TEST_P(Testbed32, CtMultPlainAddTensorInputLevel1) {
+  constexpr double tensor_plain_scale = 1.0;
+
+  int level = 1;
+  std::vector<Complex> msg1, msg2, msg3, msg4;
+  GenerateRandomMessage(msg1, -1, -0.125, 0.125, false);
+  GenerateRandomMessage(msg2, -1, -0.125, 0.125, false);
+  GenerateRandomMessage(msg4, -1, -0.125, 0.125, false);
+
+  std::vector<uint32_t> sign_bits(msg1.size());
+  Random::SampleUniformWord(sign_bits.data(), sign_bits.size(), 0u, 1u);
+  msg3.resize(msg1.size());
+  for (int i = 0; i < static_cast<int>(msg1.size()); i++) {
+    msg3[i] = sign_bits[i] == 0 ? Complex(-1.0, 0.0) : Complex(1.0, 0.0);
+  }
+
+  Ciphertext<word> ct1, ct2, ct_acc, ct_tensor, ct_ref, ct_ref_rel, ct_res,
+      ct_res_rel;
+  Plaintext<word> pt3, pt4;
+
+  auto prepare_cts = [&]() {
+    EncodeAndEncrypt(ct1, msg1, level);
+    EncodeAndEncrypt(ct2, msg2, level);
+    context_->encoder_.Encode(pt3, level, tensor_plain_scale, msg3, 0);
+    context_->encoder_.Encode(pt4, level,
+                              DetermineScale(level) * DetermineScale(level),
+                              msg4, 0);
+    interface_->Encrypt(ct_acc, pt4);
+    context_->Mult(ct_tensor, ct1, ct2);
+  };
+
+  std::string fused_name = "CtMultPlainAdd (tensor input, level1) fused";
+  __ProfileStart(fused_name, warm_up, prepare_cts());
+  context_->MultPlainAdd(ct_res, ct_tensor, pt3, ct_acc);
+  __ProfileEnd(fused_name);
+  context_->Relinearize(ct_res_rel, ct_res, interface_->GetMultiplicationKey());
+
+  std::string ref_name = "CtMultPlainAdd (tensor input, level1) reference";
+  __ProfileStart(ref_name, warm_up, prepare_cts());
+  context_->Mult(ct_ref, ct_tensor, pt3);
+  context_->Add(ct_ref, ct_ref, ct_acc);
+  __ProfileEnd(ref_name);
+  context_->Relinearize(ct_ref_rel, ct_ref, interface_->GetMultiplicationKey());
+
+  // At level 1 the tensor-input path is already at scale^2, so we validate the
+  // fused kernel against the unfused baseline instead of a cleartext oracle.
+  std::vector<Complex> fused_res;
+  DecryptAndDecode(fused_res, ct_res_rel);
+  std::vector<Complex> ref_res;
+  DecryptAndDecode(ref_res, ct_ref_rel);
+  CompareMessages(ref_res, fused_res, level == param_->max_level_);
 }
 
 TEST_P(Testbed32, CtMultConst) {

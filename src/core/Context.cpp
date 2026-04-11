@@ -846,9 +846,7 @@ void Context<word>::HRotMultPlainAdd(Ct &res, const Ct &a, const Pt &b,
   rot_dist %= num_slots;
   if (rot_dist < 0) rot_dist += num_slots;
   if (rot_dist == 0) {
-    Ct tmp;
-    Mult(tmp, a, b);
-    Add(res, tmp, c);
+    MultPlainAdd(res, a, b, c);
     return;
   }
 
@@ -911,6 +909,56 @@ void Context<word>::HMult(Ct &res, const Ct &a, const Ct &b,
     Relinearize(res, res, mult_key);
   }
 }
+
+template <typename word>
+void Context<word>::MultPlainAdd(Ct &res, const Ct &a, const Pt &b,
+                                 const Ct &c) const {
+  AssertSameNP(a, b);
+  AssertSameNP(b, c);
+  AssertSameScale(a.GetScale() * b.GetScale(), c.GetScale());
+
+  if (&res == &a || &res == &c) {
+    Ct tmp;
+    MultPlainAdd(tmp, a, b, c);
+    res = std::move(tmp);
+    return;
+  }
+
+  int num_slots = Max(a.GetNumSlots(), b.GetNumSlots(), c.GetNumSlots());
+  NPInfo np = a.GetNP();
+  res.ModifyNP(np);
+  res.SetNumSlots(num_slots);
+  res.SetScale(c.GetScale());
+
+  if (a.HasRx() && c.HasRx()) {
+    res.PrepareRx();
+    auto res_view = res.ViewVector();
+    elem_handler_.PAccum(res_view, np,
+                         {a.ConstViewVector(), c.ConstViewVector()},
+                         {b.ConstView()});
+    return;
+  }
+
+  // Fuse the bx/ax path and handle the optional rx lane separately when only
+  // one operand carries it.
+  if (a.HasRx() || c.HasRx()) {
+    res.PrepareRx();
+    if (a.HasRx()) {
+      auto res_rx_view = std::vector<DvView<word>>{res.RxView()};
+      elem_handler_.PMult(res_rx_view, np, {a.RxConstView()}, b.ConstView());
+    } else {
+      CopyDeviceToDevice(res.rx_, c.rx_);
+    }
+  } else {
+    res.RemoveRx();
+  }
+
+  auto res_view = res.ViewVector(0, true);
+  elem_handler_.PAccum(res_view, np,
+                       {a.ConstViewVector(0, true), c.ConstViewVector(0, true)},
+                       {b.ConstView()});
+}
+
 template <typename word>
 void Context<word>::MadUnsafe(Ct &res, const Ct &a, const Const &b) const {
   const NPInfo &a_np = a.GetNP();

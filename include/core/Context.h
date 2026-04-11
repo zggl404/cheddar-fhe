@@ -380,6 +380,16 @@ class Context {
   void MadUnsafe(Ct &res, const Ct &a, const Const &b) const;
 
   /**
+   * @brief res = a * b + c, but faster.
+   *
+   * @param res result ciphertext
+   * @param a input ciphertext to multiply
+   * @param b input plaintext to multiply
+   * @param c input ciphertext to add
+   */
+  void MultPlainAdd(Ct &res, const Ct &a, const Pt &b, const Ct &c) const;
+
+  /**
    * @brief res = res + (a << rot_dist) * b, but faster.
    *
    * @param res result ciphertext / accumulator

@@ -299,7 +299,7 @@ class Testbed : public testing::TestWithParam<const char *> {
   void EncodeAndEncrypt(Ciphertext<word> &res, const std::vector<Complex> &msg,
                         int level, bool mod_up = false) const {
     Plaintext<word> ptxt;
-    Encode(ptxt, msg, level, mod_up);
+    EncodeGPU(ptxt, msg, level, mod_up);
     interface_->Encrypt(res, ptxt);
   }
 

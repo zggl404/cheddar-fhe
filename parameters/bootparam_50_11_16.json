@@ -6,6 +6,7 @@
   "sparse_hamming_weight": 32,
   "num_cts_levels": 4,
   "num_stc_levels": 3,
+  "evalmod_mode": "rboot_arcsine",
   "terminal_primes": [
     33292289,
     32899073,
