@@ -41,6 +41,9 @@ if (ENABLE_EXTENSION)
   add_executable(slim_boot_test SlimBoot.cpp)
   target_link_libraries(slim_boot_test
                         PRIVATE cheddar gtest_main nlohmann_json::nlohmann_json)
+  add_executable(bts_relu_bench BtsReluBench.cpp)
+  target_link_libraries(bts_relu_bench
+                        PRIVATE cheddar nlohmann_json::nlohmann_json)
   add_executable(arcsine_check ArcSineChecks.cpp)
   target_link_libraries(arcsine_check
                         PRIVATE cheddar gtest_main nlohmann_json::nlohmann_json)
