@@ -359,59 +359,6 @@ TEST_P(Testbed32, CtMultPlainAddTensorInput) {
   }
 }
 
-TEST_P(Testbed32, CtMultPlainAddTensorInputLevel1) {
-  constexpr double tensor_plain_scale = 1.0;
-
-  int level = 1;
-  std::vector<Complex> msg1, msg2, msg3, msg4;
-  GenerateRandomMessage(msg1, -1, -0.125, 0.125, false);
-  GenerateRandomMessage(msg2, -1, -0.125, 0.125, false);
-  GenerateRandomMessage(msg4, -1, -0.125, 0.125, false);
-
-  std::vector<uint32_t> sign_bits(msg1.size());
-  Random::SampleUniformWord(sign_bits.data(), sign_bits.size(), 0u, 1u);
-  msg3.resize(msg1.size());
-  for (int i = 0; i < static_cast<int>(msg1.size()); i++) {
-    msg3[i] = sign_bits[i] == 0 ? Complex(-1.0, 0.0) : Complex(1.0, 0.0);
-  }
-
-  Ciphertext<word> ct1, ct2, ct_acc, ct_tensor, ct_ref, ct_ref_rel, ct_res,
-      ct_res_rel;
-  Plaintext<word> pt3, pt4;
-
-  auto prepare_cts = [&]() {
-    EncodeAndEncrypt(ct1, msg1, level);
-    EncodeAndEncrypt(ct2, msg2, level);
-    context_->encoder_.Encode(pt3, level, tensor_plain_scale, msg3, 0);
-    context_->encoder_.Encode(pt4, level,
-                              DetermineScale(level) * DetermineScale(level),
-                              msg4, 0);
-    interface_->Encrypt(ct_acc, pt4);
-    context_->Mult(ct_tensor, ct1, ct2);
-  };
-
-  std::string fused_name = "CtMultPlainAdd (tensor input, level1) fused";
-  __ProfileStart(fused_name, warm_up, prepare_cts());
-  context_->MultPlainAdd(ct_res, ct_tensor, pt3, ct_acc);
-  __ProfileEnd(fused_name);
-  context_->Relinearize(ct_res_rel, ct_res, interface_->GetMultiplicationKey());
-
-  std::string ref_name = "CtMultPlainAdd (tensor input, level1) reference";
-  __ProfileStart(ref_name, warm_up, prepare_cts());
-  context_->Mult(ct_ref, ct_tensor, pt3);
-  context_->Add(ct_ref, ct_ref, ct_acc);
-  __ProfileEnd(ref_name);
-  context_->Relinearize(ct_ref_rel, ct_ref, interface_->GetMultiplicationKey());
-
-  // At level 1 the tensor-input path is already at scale^2, so we validate the
-  // fused kernel against the unfused baseline instead of a cleartext oracle.
-  std::vector<Complex> fused_res;
-  DecryptAndDecode(fused_res, ct_res_rel);
-  std::vector<Complex> ref_res;
-  DecryptAndDecode(ref_res, ct_ref_rel);
-  CompareMessages(ref_res, fused_res, level == param_->max_level_);
-}
-
 TEST_P(Testbed32, CtMultConst) {
   for (int level = 1; level <= param_->max_level_; level++) {
     std::vector<Complex> msg1, msg2;

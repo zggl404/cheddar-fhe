@@ -30,6 +30,10 @@ add_executable(encode_bench EncodeBench.cpp)
 target_link_libraries(encode_bench
                       PRIVATE cheddar nlohmann_json::nlohmann_json)
 
+add_executable(operator_bench OperatorBench.cpp)
+target_link_libraries(operator_bench
+                      PRIVATE cheddar nlohmann_json::nlohmann_json)
+
 if (ENABLE_EXTENSION)
   add_executable(boot_test Bootstrapping.cpp)
   target_link_libraries(boot_test

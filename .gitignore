@@ -20,3 +20,4 @@ docs/*
 logs/*
 __pycache__/*
 res.txt
+results/*
