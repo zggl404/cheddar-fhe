@@ -154,8 +154,9 @@ EvalMod<word>::EvalMod(ConstContextPtr<word> context,
     mod_aux_function_->Compile(context);
     int aux_output_level =
         aux_start_level - Log2Ceil(boot_param.mod_aux_coefficients_.size());
+    double tune_factor = GetEvalModTuneFactor(mode_);
     context->encoder_.EncodeConstant(rboot_cos_bias_const_, aux_output_level,
-                                     target_scale, 1.0 / 16);
+                                     target_scale, 1.0 / 16 / tune_factor);
 
     int inv_start_level = aux_start_level + 1;
     double inv_input_scale =
@@ -319,6 +320,7 @@ void EvalMod<word>::CollectRbootPrefixTrace(
                     next);
     SaveTrace(context, &trace,
               "double_angle_" + std::to_string(i) + "_output", next);
+    // The inverse-sine branch starts one double-angle step earlier.
     if (i + 1 == double_angle_.size() - 1) {
       context->Copy(sin_tmp2, next);
       TraceCiphertext(context, "saved sin_tmp2", sin_tmp2);

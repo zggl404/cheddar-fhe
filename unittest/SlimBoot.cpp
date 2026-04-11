@@ -62,19 +62,115 @@ struct DecodedStats {
   double imag_abs_max = 0.0;
 };
 
+enum class SlimBootTargetFunction {
+  kRelu,
+  kVShape,
+  kIdentity,
+};
+
+inline constexpr SlimBootTargetFunction kSlimBootTargetFunction =
+    SlimBootTargetFunction::kRelu;
+inline constexpr double kSlimBootIgnoreEps = 0.01;
+inline constexpr size_t kSlimBootPreviewPairs = 64;
+
+const char *SlimBootTargetName() {
+  switch (kSlimBootTargetFunction) {
+    case SlimBootTargetFunction::kRelu:
+      return "relu";
+    case SlimBootTargetFunction::kVShape:
+      return "v_shape";
+    case SlimBootTargetFunction::kIdentity:
+      return "identity";
+  }
+  return "unknown";
+}
+
+double ApplySlimBootTarget(double value) {
+  switch (kSlimBootTargetFunction) {
+    case SlimBootTargetFunction::kRelu:
+      return value >= 0.0 ? value : 0.0;
+    case SlimBootTargetFunction::kVShape:
+      return std::abs(value);
+    case SlimBootTargetFunction::kIdentity:
+      return value;
+  }
+  return value;
+}
+
+std::vector<Complex> BuildSlimBootReference(const std::vector<Complex> &input) {
+  std::vector<Complex> expected;
+  expected.reserve(input.size());
+  for (const auto &value : input) {
+    expected.emplace_back(ApplySlimBootTarget(value.real()), 0.0);
+  }
+  return expected;
+}
+
+void PrintSlimBootPairPreview(const std::vector<Complex> &input,
+                              const std::vector<Complex> &output) {
+  size_t preview_count =
+      std::min({kSlimBootPreviewPairs, input.size(), output.size()});
+  for (size_t i = 0; i < preview_count; ++i) {
+    std::cout << "(" << input[i].real() << ", " << output[i].real() << "), ";
+  }
+  if (preview_count < output.size()) {
+    std::cout << "...";
+  }
+  std::cout << std::endl;
+}
+
+void EvaluateSlimBootMetric(const std::vector<Complex> &input,
+                            const std::vector<Complex> &output) {
+  ASSERT_EQ(input.size(), output.size());
+  ASSERT_FALSE(output.empty());
+
+  double max_err = 0.0;
+  double avg_err = 0.0;
+  double max_imag = 0.0;
+  const double center = static_cast<double>(output.size()) / 2.0;
+
+  for (size_t i = 0; i < output.size(); ++i) {
+    double curr_err =
+        std::abs(ApplySlimBootTarget(input[i].real()) - output[i].real());
+    if (std::abs(static_cast<double>(i) - center) / center >=
+        kSlimBootIgnoreEps) {
+      max_err = std::max(max_err, curr_err);
+    }
+    avg_err += curr_err;
+    max_imag = std::max(max_imag, std::abs(output[i].imag()));
+  }
+  avg_err /= static_cast<double>(output.size());
+
+  auto log2_or_neg_inf = [](double value) {
+    return value > 0.0 ? std::log2(value)
+                       : -std::numeric_limits<double>::infinity();
+  };
+
+  std::cout << "------------ SlimBoot " << SlimBootTargetName()
+            << " metric ------------" << std::endl;
+  PrintSlimBootPairPreview(input, output);
+  std::cout << std::scientific << std::setprecision(5)
+            << "max error: " << max_err << " (2^" << log2_or_neg_inf(max_err)
+            << ")" << std::endl
+            << "avg error: " << avg_err << " (2^" << log2_or_neg_inf(avg_err)
+            << ")" << std::endl
+            << "max imag: " << max_imag << " (2^" << log2_or_neg_inf(max_imag)
+            << ")" << std::endl
+            << std::fixed;
+
+  ASSERT_TRUE(std::isfinite(max_err));
+  ASSERT_TRUE(std::isfinite(avg_err));
+  ASSERT_TRUE(std::isfinite(max_imag));
+}
+
 template <typename word>
-void GenerateAlternatingHalfMessage(Testbed<word> *testbed,
-                                    std::vector<Complex> &msg, int slots) {
+void GenerateFullSlotRampMessage(Testbed<word> *testbed, std::vector<Complex> &msg,
+                                 int slots) {
   (void)testbed;
   msg.resize(slots);
-  for (int i = 0; i < slots/2; ++i) {
-    msg[i] = Complex(-0.4, 0.0);
-  }
-  for (int i = slots/2; i < slots; ++i) {
-    msg[i] = Complex(0.4, 0.0);
-    if(i>slots-2){
-      msg[i] = Complex(0.6, 0.0);
-    }
+  for (int i = 0; i < slots; ++i) {
+    double value = -1.0 + 2.0 * static_cast<double>(i) / slots;
+    msg[i] = Complex(value, 0.0);
   }
 }
 
@@ -453,14 +549,16 @@ TEST_P(Testbed32, SlimBootstrapOnly) {
   std::shared_ptr<BootContext<word>> boot_context =
       std::dynamic_pointer_cast<BootContext<word>>(context_);
   boot_context->PrepareEvalMod();
-  boot_context->PrepareEvalSpecialFFT(num_slots);
+  boot_context->PrepareEvalSpecialFFT(num_slots,
+                                      BootVariant::kImaginaryRemoving);
 
   EvkRequest req;
   boot_context->AddRequiredRotations(req, num_slots);
   interface_->PrepareRotationKey(req);
 
   std::vector<Complex> msg;
-  GenerateAlternatingHalfMessage(this, msg, num_slots);
+  GenerateFullSlotRampMessage(this, msg, num_slots);
+  std::vector<Complex> expected = BuildSlimBootReference(msg);
 
   Ciphertext<word> input;
   Ciphertext<word> output;
@@ -483,9 +581,9 @@ TEST_P(Testbed32, SlimBootstrapOnly) {
   DecryptAndDecode(decoded, output);
   if (SlimBootZeroCosBranchEnabled()) {
     PrintZeroCosSlimBootExperiment(this, boot_context, input,
-                                   interface_->GetEvkMap(), false, msg);
+                                   interface_->GetEvkMap(), false, expected);
   }
-  CompareMessages(msg, decoded);
+  EvaluateSlimBootMetric(msg, decoded);
 
   __ProfileStart("SlimBoot-MinKS", warm_up,
                  EncodeAndEncrypt(input, msg, default_encryption_level_));
@@ -495,15 +593,15 @@ TEST_P(Testbed32, SlimBootstrapOnly) {
   DecryptAndDecode(decoded, output);
   if (SlimBootZeroCosBranchEnabled()) {
     PrintZeroCosSlimBootExperiment(this, boot_context, input,
-                                   interface_->GetEvkMap(), true, msg);
+                                   interface_->GetEvkMap(), true, expected);
   }
-  CompareMessages(msg, decoded);
+  EvaluateSlimBootMetric(msg, decoded);
 }
 
 
 INSTANTIATE_TEST_SUITE_P(
     CheddarSlimBoot, Testbed32,
-    testing::Values("bootparam_50_11_13.json","bootparam_40_lattigo_arcsine.json"),
+    testing::Values("bootparam_50_11_16.json"),
     [](const testing::TestParamInfo<Testbed32::ParamType> &info) {
       std::string param_name = info.param;
       std::replace(param_name.begin(), param_name.end(), '.', '_');

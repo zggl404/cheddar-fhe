@@ -1,5 +1,4 @@
 #include "extension/BootContext.h"
-
 #include <cmath>
 
 #include "common/Assert.h"
@@ -97,6 +96,7 @@ BootContext<word>::BootContext(const Parameter<word> &param,
       (q0_prod * actual_K);
   stc_const_ = (q0_prod * param.GetScale(boot_param.GetEndLevel())) /
                (eval_mod_end_scale * level_zero_scale);
+  stc_const_ *= GetEvalModTuneFactor(boot_param.eval_mod_mode_);
   this->encoder_.EncodeConstant(scaleup_const_, -1, 1.0, (1 << log_scaleup_));
   // Populating mod_max_intt_const_;
 

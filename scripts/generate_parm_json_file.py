@@ -14,12 +14,13 @@ PRIMEGEN = ROOT / "primegen32.py"
 LOG_SCALE = 50
 EVALMOD_LOG_SCALE = 58
 NORMAL_LEVEL = 11
-EVALMOD_LEVEL = 13
+EVALMOD_LEVEL = 16
 CTS_LEVEL = 4
 DNUM = 4
 NUM_STC_LEVELS = 3
+DEFAULT_EVALMOD_MODE = "legacy"
 
-DEFAULT_OUT = ROOT / "parameters" / "bootparam_50_test.json"
+DEFAULT_OUT = ROOT.parent / "parameters" / f"bootparam_50_{NORMAL_LEVEL}_{EVALMOD_LEVEL}.json"
 
 
 def parse_int_list(line: str) -> list[int]:
@@ -60,7 +61,7 @@ def run_primegen() -> str:
     return result.stdout
 
 
-def build_config(primegen_stdout: str) -> dict:
+def build_config(primegen_stdout: str, evalmod_mode: str) -> dict:
     q_primes = None
     terminal_primes = None
     auxiliary_primes = None
@@ -102,6 +103,7 @@ def build_config(primegen_stdout: str) -> dict:
         "sparse_hamming_weight": 32,
         "num_cts_levels": CTS_LEVEL,
         "num_stc_levels": NUM_STC_LEVELS,
+        "evalmod_mode": evalmod_mode,
         "terminal_primes": terminal_primes,
         "main_primes": q_primes,
         "auxiliary_primes": auxiliary_primes,
@@ -121,14 +123,23 @@ def main() -> None:
         default=DEFAULT_OUT,
         help="Path to write the generated JSON file",
     )
+    parser.add_argument(
+        "--evalmod-mode",
+        "--evalmod_mode",
+        dest="evalmod_mode",
+        choices=("legacy", "lattigo_arcsine", "rboot_arcsine"),
+        default=DEFAULT_EVALMOD_MODE,
+        help="EvalMod mode to encode into the generated JSON file",
+    )
     args = parser.parse_args()
 
-    config = build_config(run_primegen())
+    config = build_config(run_primegen(), args.evalmod_mode)
     args.out.parent.mkdir(parents=True, exist_ok=True)
     args.out.write_text(json.dumps(config, indent=2) + "\n", encoding="ascii")
 
     print(f"Wrote {args.out}")
     print(
+        f"evalmod_mode={config['evalmod_mode']}, "
         f"main={len(config['main_primes'])}, "
         f"terminal={len(config['terminal_primes'])}, "
         f"aux={len(config['auxiliary_primes'])}, "

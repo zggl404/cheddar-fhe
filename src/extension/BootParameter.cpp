@@ -199,12 +199,18 @@ namespace cheddar
 
     std::vector<double> GetRbootArcSineCosCoefficients()
     {
-      return ScaleCoefficients(GetArcSineChebyshevCoefficients(), 0.25);
+      constexpr double tune_factor =
+          GetEvalModTuneFactor(EvalModMode::kRbootArcSine);
+      return ScaleCoefficients(GetArcSineChebyshevCoefficients(),
+                               0.25 / tune_factor);
     }
 
     std::vector<double> GetRbootArcSineSinCoefficients()
     {
-      return ScaleCoefficients(GetArcSineInvCoefficients(), 0.5);
+      constexpr double tune_factor =
+          GetEvalModTuneFactor(EvalModMode::kRbootArcSine);
+      return ScaleCoefficients(GetArcSineInvCoefficients(),
+                               0.5 / tune_factor);
     }
 
        std::vector<double> GetMainModCoefficients(EvalModMode mode)
@@ -255,8 +261,8 @@ namespace cheddar
         mod_coefficients_{GetMainModCoefficients(eval_mod_mode)},
         mod_aux_coefficients_{GetAuxModCoefficients(eval_mod_mode)},
         mod_inv_coefficients_{GetInvModCoefficients(eval_mod_mode)},
-        num_double_angle_{3},
-        initial_K_{2}
+        num_double_angle_{UseRbootArcSine() ? 4 : 3},
+        initial_K_{UseRbootArcSine() ? 1 : 2}
   {
     if (UseLattigoArcSine() || UseRbootArcSine())
     {

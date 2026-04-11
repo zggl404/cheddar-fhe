@@ -10,6 +10,13 @@ enum class EvalModMode {
   kRbootArcSine,
 };
 
+// Shared tuning knob for the RBOOT-as-ReLU path.
+inline constexpr double kRbootReluTuneFactor = 2.845;
+
+inline constexpr double GetEvalModTuneFactor(EvalModMode mode) {
+  return mode == EvalModMode::kRbootArcSine ? kRbootReluTuneFactor : 1.0;
+}
+
 /**
  * @brief A class for storing bootstrapping parameters.
  *
