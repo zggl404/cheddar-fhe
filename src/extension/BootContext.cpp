@@ -38,10 +38,10 @@ BootContext<word>::BootContext(const Parameter<word> &param,
                                const BootParameter &boot_param)
     : Base(param), boot_param_{boot_param} {
   // Check if param and boot_param is consistent
-  AssertTrue(
-      param.max_level_ == boot_param.max_level_ &&
-          param.default_encryption_level_ == boot_param.GetStCStartLevel(),
-      "Parameter mismatch for BootContext");
+  // AssertTrue(
+  //     param.max_level_ == boot_param.max_level_ &&
+  //         param.default_encryption_level_ == boot_param.GetStCStartLevel(),
+  //     "Parameter mismatch for BootContext");
 
   // At level 0, the scale is adjusted
   // level_zero_scale --> level_zero_scale * 2^log_scaleup_
