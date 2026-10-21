@@ -45,10 +45,12 @@ Parameter<word>::Parameter(
   word max_prime = 0;
   auto max_func = [](word a, word b) -> word { return Max<word>(a, b); };
 
-  std::accumulate(main_primes.cbegin(), main_primes.cend(), max_prime,
-                  max_func);
-  std::accumulate(aux_primes.cbegin(), aux_primes.cend(), max_prime, max_func);
-  std::accumulate(ter_primes.cbegin(), ter_primes.cend(), max_prime, max_func);
+  max_prime = std::accumulate(main_primes.cbegin(), main_primes.cend(),
+                              max_prime, max_func);
+  max_prime = std::accumulate(aux_primes.cbegin(), aux_primes.cend(),
+                              max_prime, max_func);
+  max_prime = std::accumulate(ter_primes.cbegin(), ter_primes.cend(),
+                              max_prime, max_func);
   AssertTrue(max_prime < (((word)1) << (word_size_ * 8 - extra_bits_)),
              "Max prime is too large for the word size");
 

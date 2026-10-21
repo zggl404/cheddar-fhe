@@ -2,21 +2,19 @@
 
 #include <gtest/gtest.h>
 
-#include <nlohmann/json.hpp>
-using json = nlohmann::json;
-
 #include <algorithm>
 #include <chrono>
 #include <cmath>
-#include <fstream>
 #include <iomanip>
 #include <iostream>
 #include <memory>
 
 #include "UserInterface.h"
+#include "TestParameters.h"
 
 #ifdef ENABLE_EXTENSION
 #include "extension/BootContext.h"
+#include "extension/BootParameterLiteral.h"
 #endif
 
 using namespace cheddar;
@@ -93,127 +91,27 @@ class Testbed : public testing::TestWithParam<const char *> {
   static inline constexpr double max_error_ = 1e-3;
 
   void SetUp() override {
-    std::string json_path = std::string(PARAM_DIR) + "/" + GetParam();
-    std::ifstream json_file(json_path);
-    Check(json_file.is_open(), "Failed to open JSON file: " + json_path);
-    json json_data = json::parse(json_file);
-    json_file.close();
-
-    // Parsing...
-    Check(json_data.contains("log_degree"), "Missing log_degree in JSON file");
-    Check(json_data["log_degree"].is_number_integer(),
-          "log_degree should be an integer");
-    log_degree_ = json_data["log_degree"];
-
-    Check(json_data.contains("log_default_scale"),
-          "Missing log_default_scale in JSON file");
-    Check(json_data["log_default_scale"].is_number_integer(),
-          "log_default_scale should be an integer");
-    int log_default_scale = json_data["log_default_scale"];
-    default_scale_ = (UINT64_C(1) << log_default_scale);
-
-    Check(json_data.contains("default_encryption_level"),
-          "Missing default_encryption_level in JSON file");
-    Check(json_data["default_encryption_level"].is_number_integer(),
-          "default_encryption_level should be an integer");
-    default_encryption_level_ = json_data["default_encryption_level"];
-
-    main_primes_.clear();
-    Check(json_data.contains("main_primes"),
-          "Missing main_primes in JSON file");
-    auto main_primes = json_data["main_primes"];
-    Check(main_primes.is_array(), "main_primes should be an array");
-    std::vector<word> main_primes_;
-    for (const auto &prime : main_primes) {
-      Check(prime.is_number_integer(),
-            "main_primes should be an array of integers");
-      main_primes_.push_back(prime);
-    }
-
-    ter_primes_.clear();
-    if (json_data.contains("terminal_primes")) {
-      auto ter_primes = json_data["terminal_primes"];
-      Check(ter_primes.is_array(), "aux_primes should be an array");
-      for (const auto &prime : ter_primes) {
-        Check(prime.is_number_integer(),
-              "terminal_primes should be an array of integers");
-        ter_primes_.push_back(prime);
-      }
-    }
-
-    aux_primes_.clear();
-    Check(json_data.contains("auxiliary_primes"),
-          "Missing auxiliary_primes in JSON file");
-    auto aux_primes = json_data["auxiliary_primes"];
-    Check(aux_primes.is_array(), "aux_primes should be an array");
-    for (const auto &prime : aux_primes) {
-      Check(prime.is_number_integer(),
-            "auxiliary_primes should be an array of integers");
-      aux_primes_.push_back(prime);
-    }
-
-    level_config_.clear();
-    Check(json_data.contains("level_config"),
-          "Missing level_config in JSON file");
-    auto level_config = json_data["level_config"];
-    Check(level_config.is_array(), "level_config should be an array");
-    for (const auto &pair : level_config) {
-      Check(pair.is_array() && pair.size() == 2,
-            "level_config should be an array of pairs");
-      level_config_.emplace_back(pair[0], pair[1]);
-    }
-
-    additional_base_ = {0, 0};
-    if (json_data.contains("additional_base")) {
-      auto additional_base = json_data["additional_base"];
-      Check(additional_base.is_array() && additional_base.size() == 2,
-            "additional_base should be an array of pairs");
-      additional_base_ = {additional_base[0], additional_base[1]};
-    }
-
-    // Initialize Parameter
-    param_ = std::make_unique<Parameter<word>>(
-        log_degree_, default_scale_, default_encryption_level_, level_config_,
-        main_primes_, aux_primes_, ter_primes_, additional_base_);
-
-    if (json_data.contains("dense_hamming_weight")) {
-      Check(json_data["dense_hamming_weight"].is_number_integer(),
-            "dense_hamming_weight should be an integer");
-      int dense_h = json_data["dense_hamming_weight"];
-      param_->SetDenseHammingWeight(dense_h);
-    }
-    if (json_data.contains("sparse_hamming_weight")) {
-      Check(json_data["sparse_hamming_weight"].is_number_integer(),
-            "sparse_hamming_weight should be an integer");
-      int sparse_h = json_data["sparse_hamming_weight"];
-      param_->SetSparseHammingWeight(sparse_h);
-    }
+    auto literal = TestParameters<word>(GetParam());
+#ifdef ENABLE_EXTENSION
+    BootParametersLiteral boot_literal;
+    if (std::string(GetParam()) == "normal50_boot56_p5")
+      boot_literal.boot_scale_bits = 56;
+    literal = ResolveBootParametersLiteral(literal, boot_literal);
+#endif
+    literal = ResolveParametersLiteral(literal);
+    param_ = NewParametersFromLiteral(literal);
+    log_degree_ = literal.log_degree;
+    default_scale_ = param_->base_scale_;
+    default_encryption_level_ = literal.default_encryption_level;
+    main_primes_ = literal.main_primes;
+    ter_primes_ = literal.terminal_primes;
+    aux_primes_ = literal.auxiliary_primes;
+    level_config_ = literal.level_config;
+    additional_base_ = literal.additional_base;
 
 #ifdef ENABLE_EXTENSION
-    bool enable_boot = false;
-    if (json_data.contains("boot")) {
-      Check(json_data["boot"].is_boolean(), "boot should be a boolean");
-      enable_boot = json_data["boot"];
-    }
-
-    if (enable_boot) {
-      std::cout << "Bootstrapping enabled" << std::endl;
-      Check(json_data.contains("num_cts_levels"),
-            "Missing num_cts_levels in JSON file");
-      Check(json_data["num_cts_levels"].is_number_integer(),
-            "num_cts_levels should be an integer");
-      int num_cts_levels = json_data["num_cts_levels"];
-      Check(json_data.contains("num_stc_levels"),
-            "Missing num_stc_levels in JSON file");
-      Check(json_data["num_stc_levels"].is_number_integer(),
-            "num_stc_levels should be an integer");
-      int num_stc_levels = json_data["num_stc_levels"];
-      context_ = BootContext<word>::Create(
-          *param_,
-          BootParameter(param_->max_level_, num_cts_levels, num_stc_levels));
-    } else {
-      context_ = Context<word>::Create(*param_);
-    }
+    context_ = BootContext<word>::Create(
+        *param_, NewBootParametersFromLiteral(literal, boot_literal));
 #else
     context_ = Context<word>::Create(*param_);
 #endif

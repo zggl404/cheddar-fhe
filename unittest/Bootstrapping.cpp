@@ -42,8 +42,8 @@ TEST_P(Testbed32, Bootstrap) {
 
 INSTANTIATE_TEST_SUITE_P(
     Cheddar, Testbed32,
-    testing::Values("bootparam_30.json", "bootparam_35.json",
-                    "bootparam_40.json"),
+    testing::Values("bootparam_30", "bootparam_35",
+                    "bootparam_40"),
     [](const testing::TestParamInfo<Testbed32::ParamType> &info) {
       std::string param_name = info.param;
       std::replace(param_name.begin(), param_name.end(), '.', '_');
@@ -87,7 +87,7 @@ TEST_P(Testbed64, Bootstrap) {
 }
 
 INSTANTIATE_TEST_SUITE_P(
-    Cheddar, Testbed64, testing::Values("bootparam_40_64bit.json"),
+    Cheddar, Testbed64, testing::Values("bootparam_40_64bit", "normal50_boot56_p5"),
     [](const testing::TestParamInfo<Testbed64::ParamType> &info) {
       std::string param_name = info.param;
       std::replace(param_name.begin(), param_name.end(), '.', '_');

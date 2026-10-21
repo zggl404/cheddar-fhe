@@ -31,8 +31,8 @@ class Parameter {
    *
    * @param log_degree log2(polynomial degree), currently only 16 is supported
    * @param base_scale scale at level 0
-   * @param default_encryption_level default encryption level (maximum level
-   * after bootstrapping)
+   * @param default_encryption_level default encryption level (StC start level
+   * when bootstrapping is enabled)
    * @param level_config level configuration
    * @param main_primes list of main primes
    * @param aux_primes list of auxiliary primes
