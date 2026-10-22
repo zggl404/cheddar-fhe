@@ -1,5 +1,7 @@
 #pragma once
 
+#include <cuda_runtime.h>
+
 #include <algorithm>
 #include <complex>
 #include <vector>
@@ -12,9 +14,9 @@ namespace cheddar {
 
 /**
  * @brief Encoder class for encoding/decoding messages into plaintexts and
- * preparing constants. The implementation is not very optimized as it is not of
- * our highest priority to optimize offline operations. Nevertheless, we intend
- * to optimize this class in the future for faster testing experience.
+ * preparing constants. Encode runs SpecialIFFT, RNS conversion and NTT on the
+ * GPU. EncodeCPU retains the reference implementation; Decode and EncodeConstant
+ * still perform their host-side arithmetic on the CPU.
  *
  * @tparam word uint32_t or uint64_t
  */
@@ -26,6 +28,11 @@ class Encoder {
   const int M_;
 
   std::vector<Complex> twiddle_factors_;
+  rmm::device_uvector<double2> gpu_twiddle_factors_;
+  DeviceVector<uint32_t> gpu_galois_factors_;
+
+  int ValidateEncodeInput(const std::vector<Complex> &message, double scale,
+                          double *max_component = nullptr) const;
 
   void EncodeWorker(Plaintext<word> &ptxt, int level, double scale,
                     std::vector<Complex> &message, int num_aux = 0) const;
@@ -47,7 +54,7 @@ class Encoder {
   Encoder(const Parameter<word> &param, const NTTHandler<word> &ntt_handler);
 
   /**
-   * @brief Encode a message into a plaintext for a given level and scale.
+   * @brief Encode a host message on the GPU for a given level and scale.
    * The message will be padded to the nearest power of 2.
    *
    * @param ptxt output plaintext (NTT-applied)
@@ -55,9 +62,15 @@ class Encoder {
    * @param scale scale to apply
    * @param message complex message to encode.
    * @param num_aux number of auxiliary primes
+   * @throws std::invalid_argument for empty/oversized/nonfinite messages, invalid
+   * scale, or nonfinite transformed/scaled coefficients.
    */
   void Encode(Plaintext<word> &ptxt, int level, double scale,
               const std::vector<Complex> &message, int num_aux = 0) const;
+
+  // CPU reference: same layout, scale and truncation semantics; NTT uses GPU.
+  void EncodeCPU(Plaintext<word> &ptxt, int level, double scale,
+                 const std::vector<Complex> &message, int num_aux = 0) const;
 
   /**
    * @brief Decode a plaintext into a complex message.

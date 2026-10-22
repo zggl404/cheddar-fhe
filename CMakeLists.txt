@@ -44,6 +44,7 @@ set(CKKS_GPU_SOURCES
   src/core/Context.cpp
   src/core/DeviceVector.cpp
   src/core/Encode.cpp
+  src/core/Encode.cu
   src/core/EvkMap.cpp
   src/core/EvkRequest.cpp
   src/core/MemoryPool.cpp

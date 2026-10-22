@@ -265,6 +265,33 @@ Run `build/unittest/modswitch_test` for residue/metadata checks, decryption,
 invalid-target/base checks and exact comparison with all three legacy 32-bit
 presets, including main/terminal exchanges.
 
+## GPU encoding
+
+The existing `Encode` API uses the GPU on both word widths:
+
+```cpp
+Plaintext<uint64_t> pt;
+context->encoder_.Encode(pt, level, scale, message); // num_aux defaults to 0
+// Explicit reference implementation, useful for validation:
+context->encoder_.EncodeCPU(pt, level, scale, message);
+```
+
+Host messages are zero-padded to a power of two and uploaded once. SpecialIFFT,
+bit reversal, normalization, scaling, integer truncation, RNS conversion and NTT
+run on the GPU. SpecialIFFT uses up to two shared-memory kernels instead of one
+launch per stage. The output keeps the requested scale and existing sparse-slot,
+main/terminal/auxiliary-prime and Montgomery/NTT layouts. Finite coefficients
+wider than 64 bits are reduced using their binary integer representation, without
+rounding the moduli to `double`. Input validation remains on the host and also
+computes a conservative bound on FFT and scaled coefficients. Ordinary inputs
+need no overflow-status allocation or readback; inputs outside that proven range
+retain the GPU overflow check and status readback before NTT.
+
+`EncodeCPU` retains the host SpecialIFFT and BigInt conversion followed by GPU
+NTT. `Decode` and `EncodeConstant` retain their existing arithmetic paths.
+Run `build/unittest/encode_test` for CPU/GPU residue comparisons, decode checks,
+invalid-input checks and end-to-end timing (including upload and completion).
+
 ## License and Citing
 
 See the [License](./LICENSE).
