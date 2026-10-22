@@ -935,14 +935,18 @@ void Context<word>::ModSwitch(Ct &res, const Ct &a, int target_level) const {
     if (target_np.num_ter_ != 0 || target_np.num_aux_ != 0 ||
         target_np.num_main_ > source_np.num_main_)
       throw std::invalid_argument("ModSwitch64 requires a main-Q prefix target");
+    if (target_level > param_.default_encryption_level_)
+      throw std::invalid_argument("ModSwitch64: target has no configured scale");
+    const double target_scale = param_.GetScale(target_level);
     if (&res == &a) {
       res.ModifyNP(target_np);
+      res.SetScale(target_scale);
       return;
     }
     res.RemoveRx();
     res.ModifyNP(target_np);
     if (a.HasRx()) res.PrepareRx();
-    res.SetScale(a.GetScale());
+    res.SetScale(target_scale);
     res.SetNumSlots(a.GetNumSlots());
     const auto source = a.ConstViewVector();
     auto target = res.ViewVector();

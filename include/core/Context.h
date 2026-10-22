@@ -400,8 +400,11 @@ class Context {
 
   /**
    * @brief Lower a ciphertext to target_level with backend-specific semantics.
-   * For uint64_t, retain a main-Q prefix without changing scale, slots or
-   * ciphertext degree. Terminal/P bases are unsupported. In-place is allowed.
+   * For uint64_t, retain a main-Q prefix and set scale to GetScale(target_level).
+   * This relabels the scale without adjusting residues: decoded values gain a
+   * factor input_scale / target_scale. Slots and ciphertext degree are preserved.
+   * Terminal/P bases and targets without a configured scale are unsupported.
+   * In-place and same-level calls also set the target scale.
    * For uint32_t, delegate to LevelDown, preserving its rescale/scale behavior.
    * Throws std::invalid_argument for invalid target levels or unsupported
    * 64-bit bases. Other legacy LevelDown preconditions still apply to uint32_t.

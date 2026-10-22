@@ -248,18 +248,22 @@ context->ModSwitch(output, input, target_level);
 context->ModSwitch(input, input, target_level); // In-place is also supported.
 ```
 
-For 64-bit ciphertexts, this retains the requested main-Q prefix and preserves
-actual ciphertext scale, slot count and polynomial degree. It performs no rescale,
-NTT or key switching. In-place calls shrink the logical buffer lengths; out-of-place
-calls copy only retained residues. Terminal/P inputs and non-prefix targets are
-rejected, as are negative targets or attempts to raise the level.
+For 64-bit ciphertexts, this retains the requested main-Q prefix and sets the
+scale to `param.GetScale(target_level)`, preserving slot count and polynomial
+degree. It performs no rescale, coefficient adjustment, NTT or key switching.
+Decoded values therefore gain a factor of `input.GetScale() / param.GetScale(target_level)`;
+when the two scales are close, this is a small multiplicative error. In-place calls
+shrink logical buffer lengths; out-of-place calls copy only retained residues.
+Both in-place and same-level calls set the target scale. Terminal/P inputs,
+non-prefix targets and targets above `default_encryption_level` (which have no
+configured scale) are rejected, as are negative targets or attempts to raise level.
 
 For 32-bit ciphertexts, `ModSwitch` delegates to the existing `LevelDown`, including
 its encoded-one multiplication, rescaling, scale evolution and preconditions.
-Thus the common API lowers the level but does not promise unchanged scale on the
-32-bit backend. The original `LevelDown` and all Boot preparation calls remain
-unchanged. A 64-bit ModSwitch result keeps `input.GetScale()`; it must not be reset
-to `param.GetScale(target_level)` merely because its level changed.
+The original `LevelDown` and all Boot preparation calls remain unchanged. The
+64-bit policy assumes the input scale is close to the planned scale; arbitrary
+input scales can introduce a substantial gain error. It does not compensate
+that error by multiplying the ciphertext.
 
 Run `build/unittest/modswitch_test` for residue/metadata checks, decryption,
 invalid-target/base checks and exact comparison with all three legacy 32-bit
