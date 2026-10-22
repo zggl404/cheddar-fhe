@@ -1,4 +1,5 @@
 #include "core/Encode.h"
+#include "common/Basic.cuh"
 
 #include <rmm/detail/error.hpp>
 
@@ -11,20 +12,29 @@ namespace cheddar {
 namespace {
 
 // Keep the CPU operation order: FMA contraction changes quantization at high scales.
-__device__ __forceinline__ void EncodeButterfly(double2 &a, double2 &b,
+template <bool inverse>
+__device__ __forceinline__ void TransformButterfly(double2 &a, double2 &b,
                                                 double2 w) {
-  double x = __dsub_rn(a.x, b.x), y = __dsub_rn(a.y, b.y);
-  a = make_double2(__dadd_rn(a.x, b.x), __dadd_rn(a.y, b.y));
-  b = make_double2(__dsub_rn(__dmul_rn(x, w.x), __dmul_rn(y, w.y)),
-                  __dadd_rn(__dmul_rn(x, w.y), __dmul_rn(y, w.x)));
+  if constexpr (inverse) {
+    double x = __dsub_rn(a.x, b.x), y = __dsub_rn(a.y, b.y);
+    a = make_double2(__dadd_rn(a.x, b.x), __dadd_rn(a.y, b.y));
+    b = make_double2(__dsub_rn(__dmul_rn(x, w.x), __dmul_rn(y, w.y)),
+                    __dadd_rn(__dmul_rn(x, w.y), __dmul_rn(y, w.x)));
+  } else {
+    double x = __dsub_rn(__dmul_rn(b.x, w.x), __dmul_rn(b.y, w.y));
+    double y = __dadd_rn(__dmul_rn(b.x, w.y), __dmul_rn(b.y, w.x));
+    b = make_double2(__dsub_rn(a.x, x), __dsub_rn(a.y, y));
+    a = make_double2(__dadd_rn(a.x, x), __dadd_rn(a.y, y));
+  }
 }
 
 constexpr int kEncodeLogTile = 9;
 constexpr int kEncodeTile = 1 << kEncodeLogTile;
 // Fuse the high-stride stages by gathering a 512-element tile across the high
 // index bits. Adjacent lanes still load adjacent low indices. The remaining
-// stages operate on contiguous tiles in EncodeIFFTTail.
-__global__ void EncodeIFFTHead(double2 *data, int log_slots, int M,
+// stages operate on contiguous tiles in SpecialFFTTail.
+template <bool inverse>
+__global__ void SpecialFFTHead(double2 *data, int log_slots, int M,
                               const double2 *twiddles,
                               const uint32_t *galois) {
   __shared__ double2 tile[kEncodeTile];
@@ -35,16 +45,18 @@ __global__ void EncodeIFFTHead(double2 *data, int log_slots, int M,
   for (int i = t; i < kEncodeTile; i += blockDim.x)
     tile[i] = data[(i >> log_lanes) * kEncodeTile + low_base + (i & (lanes - 1))];
   __syncthreads();
-  for (int log_stride = kEncodeLogTile - 1; log_stride >= log_lanes; --log_stride) {
+  for (int stage = 0; stage < kEncodeLogTile - log_lanes; ++stage) {
+    int log_stride = inverse ? kEncodeLogTile - 1 - stage : log_lanes + stage;
     int stride = 1 << log_stride;
     int j = t & (stride - 1);
     int i = 2 * (t - j) + j;
     int global_j = (j >> log_lanes) * kEncodeTile + low_base + (j & (lanes - 1));
     int log_st8 = log_stride - log_lanes + kEncodeLogTile + 3;
     int st8 = 1 << log_st8;
-    double2 w = twiddles[(st8 - (galois[global_j] & (st8 - 1))) * (M >> log_st8)];
+    int factor = galois[global_j] & (st8 - 1);
+    double2 w = twiddles[(inverse ? st8 - factor : factor) * (M >> log_st8)];
     double2 a = tile[i], b = tile[i + stride];
-    EncodeButterfly(a, b, w);
+    TransformButterfly<inverse>(a, b, w);
     tile[i] = a;
     tile[i + stride] = b;
     __syncthreads();
@@ -55,7 +67,8 @@ __global__ void EncodeIFFTHead(double2 *data, int log_slots, int M,
 
 // The last nine stages operate on independent 512-element groups. Keep each
 // group in shared memory, with a barrier between stages instead of a new launch.
-__global__ void EncodeIFFTTail(double2 *data, int slots, int M,
+template <bool inverse>
+__global__ void SpecialFFTTail(double2 *data, int slots, int M,
                               const double2 *twiddles,
                               const uint32_t *galois) {
   __shared__ double2 tile[kEncodeTile];
@@ -64,15 +77,18 @@ __global__ void EncodeIFFTTail(double2 *data, int slots, int M,
   int size = min(slots, kEncodeTile);
   for (int i = t; i < size; i += blockDim.x) tile[i] = data[base + i];
   __syncthreads();
-  for (int log_stride = __ffs(size) - 2; log_stride >= 0; --log_stride) {
+  const int stages = __ffs(size) - 1;
+  for (int stage = 0; stage < stages; ++stage) {
+    int log_stride = inverse ? stages - 1 - stage : stage;
     int stride = 1 << log_stride;
     if (t < size / 2) {
       int j = t & (stride - 1);
       int i = 2 * (t - j) + j;
       int st8 = stride * 8;
-      double2 w = twiddles[(st8 - (galois[j] & (st8 - 1))) * (M >> (log_stride + 3))];
+      int factor = galois[j] & (st8 - 1);
+      double2 w = twiddles[(inverse ? st8 - factor : factor) * (M >> (log_stride + 3))];
       double2 a = tile[i], b = tile[i + stride];
-      EncodeButterfly(a, b, w);
+      TransformButterfly<inverse>(a, b, w);
       tile[i] = a;
       tile[i + stride] = b;
     }
@@ -127,7 +143,127 @@ __global__ void EncodeRNS(word *output, const double2 *data, int slots,
   limb[i * gap + degree / 2] = TruncatedMod(imag, prime);
 }
 
+// Read a window from a transposed, exact little-endian integer. The transpose
+// keeps neighboring coefficients coalesced without a fixed per-thread limb cap.
+__device__ uint64_t IntegerWindow(const uint64_t *limbs, int columns, int tid,
+                                  int used, int shift) {
+  int index = shift / 64, bits = shift % 64;
+  uint64_t value = index < used ? limbs[size_t(index) * columns + tid] >> bits : 0;
+  if (bits && index + 1 < used)
+    value |= limbs[size_t(index + 1) * columns + tid] << (64 - bits);
+  return value;
+}
+
+template <typename word>
+__global__ void DecodeCRT(double2 *output, const word *input, word *digits,
+                          uint64_t *limbs, int slots, int log_slots, int degree,
+                          int count, int num_limbs, double scale,
+                          const word *primes, const make_signed_t<word> *inv_primes,
+                          const word *inverses, int full_count, int prime_start,
+                          const uint64_t *bounds) {
+  int tid = blockIdx.x * blockDim.x + threadIdx.x;
+  int columns = 2 * slots;
+  if (tid >= columns) return;
+  int coefficient = tid * (degree >> (log_slots + 1));
+  // Garner mixed-radix digits: all modular steps are exact integer arithmetic.
+  for (int i = 0; i < count; ++i) {
+    word prime = primes[i];
+    word digit = input[size_t(i) * degree + coefficient];
+    for (int j = 0; j < i; ++j) {
+      word previous = digits[size_t(j) * columns + tid];
+      if (previous >= prime) previous %= prime;
+      digit = basic::MultMontgomery(basic::Sub(digit, previous, prime),
+          inverses[size_t(prime_start + i) * full_count + prime_start + j],
+          prime, inv_primes[i]);
+    }
+    digits[size_t(i) * columns + tid] = digit;
+  }
+  // Exact Horner reconstruction x = (...(d[k-1]*q[k-2]+d[k-2])...)*q0+d0.
+  int used = 0;
+  for (int i = count - 1; i >= 0; --i) {
+    uint64_t carry = digits[size_t(i) * columns + tid];
+    for (int l = 0; l < used; ++l) {
+      uint64_t value = limbs[size_t(l) * columns + tid];
+      uint64_t lo = value * uint64_t(primes[i]);
+      uint64_t sum = lo + carry;
+      carry = __umul64hi(value, uint64_t(primes[i])) + (sum < lo);
+      limbs[size_t(l) * columns + tid] = sum;
+    }
+    if (carry) limbs[size_t(used++) * columns + tid] = carry;
+  }
+  bool negative = false;
+  for (int l = num_limbs - 1; l >= 0; --l) {
+    uint64_t value = l < used ? limbs[size_t(l) * columns + tid] : 0;
+    if (value != bounds[num_limbs + l]) {
+      negative = value > bounds[num_limbs + l];
+      break;
+    }
+  }
+  if (negative) {
+    uint64_t borrow = 0;
+    for (int l = 0; l < num_limbs; ++l) {
+      uint64_t value = l < used ? limbs[size_t(l) * columns + tid] : 0;
+      uint64_t sub = bounds[l] - value;
+      uint64_t result = sub - borrow;
+      borrow = (bounds[l] < value) | (sub < borrow);
+      limbs[size_t(l) * columns + tid] = result;
+    }
+    used = num_limbs;
+    while (used && limbs[size_t(used - 1) * columns + tid] == 0) --used;
+  }
+  // Match GMP's integer->double conversion: retain the leading 53 bits,
+  // truncating low mantissa bits before dividing by scale. No cancellation of
+  // huge approximate CRT terms is involved. TomMath may differ in the last ulp.
+  double value = 0;
+  if (used) {
+    int bits = 64 * used - __clzll(limbs[size_t(used - 1) * columns + tid]);
+    int shift = max(0, bits - 53);
+    value = ldexp(__ull2double_rn(IntegerWindow(limbs, columns, tid, used, shift)), shift);
+  }
+  if (negative) value = -value;
+  value = __ddiv_rn(value, scale);
+  int slot = tid % slots;
+  int reversed = log_slots ? int(__brev(unsigned(slot)) >> (32 - log_slots)) : 0;
+  reinterpret_cast<double *>(output)[2 * reversed + (tid >= slots)] = value;
+}
+
+template <typename word>
+__global__ void EncodeConstantRNS(word *output, double number, double scale,
+                                  const word *primes,
+                                  const make_signed_t<word> *inv_primes,
+                                  const word *r2, int count, int num_q,
+                                  int prime_start, int full_count) {
+  int i = blockIdx.x * blockDim.x + threadIdx.x;
+  if (i >= count) return;
+  word prime = primes[i];
+  word residue = TruncatedMod(__dmul_rn(number, scale), prime);
+  int index = i < num_q ? prime_start + i : full_count + i - num_q;
+  output[i] = basic::MultMontgomery(residue, r2[index], prime, inv_primes[i]);
+}
+
 }  // namespace
+
+template <typename word>
+void Encoder<word>::SpecialFFTGPU(double2 *data, int slots, bool inverse) const {
+  int log_slots = 0;
+  for (int n = slots; n > 1; n /= 2) ++log_slots;
+  if (inverse) {
+    if (slots > kEncodeTile)
+      SpecialFFTHead<true><<<slots / kEncodeTile, 256>>>(
+          data, log_slots, M_, gpu_twiddle_factors_.data(), gpu_galois_factors_.data());
+    if (slots > 1)
+      SpecialFFTTail<true><<<(slots + kEncodeTile - 1) / kEncodeTile, 256>>>(
+          data, slots, M_, gpu_twiddle_factors_.data(), gpu_galois_factors_.data());
+  } else {
+    if (slots > 1)
+      SpecialFFTTail<false><<<(slots + kEncodeTile - 1) / kEncodeTile, 256>>>(
+          data, slots, M_, gpu_twiddle_factors_.data(), gpu_galois_factors_.data());
+    if (slots > kEncodeTile)
+      SpecialFFTHead<false><<<slots / kEncodeTile, 256>>>(
+          data, log_slots, M_, gpu_twiddle_factors_.data(), gpu_galois_factors_.data());
+  }
+  RMM_CUDA_TRY(cudaGetLastError());
+}
 
 template <typename word>
 void Encoder<word>::Encode(Plaintext<word> &ptxt, int level, double scale,
@@ -165,18 +301,7 @@ void Encoder<word>::Encode(Plaintext<word> &ptxt, int level, double scale,
                               message.size() * sizeof(Complex),
                               cudaMemcpyHostToDevice));
   if (upload_done) RMM_CUDA_TRY(cudaEventRecord(upload_done.get()));
-  if (slots > kEncodeTile) {
-    EncodeIFFTHead<<<slots / kEncodeTile, threads>>>(
-        data.data(), log_slots, M_, gpu_twiddle_factors_.data(),
-        gpu_galois_factors_.data());
-    RMM_CUDA_TRY(cudaGetLastError());
-  }
-  if (slots > 1) {
-    EncodeIFFTTail<<<(slots + kEncodeTile - 1) / kEncodeTile, threads>>>(
-        data.data(), slots, M_, gpu_twiddle_factors_.data(),
-        gpu_galois_factors_.data());
-    RMM_CUDA_TRY(cudaGetLastError());
-  }
+  SpecialFFTGPU(data.data(), slots, true);
   ptxt.ModifyNP(np);
   ptxt.SetNumSlots(slots);
   ptxt.SetScale(scale);
@@ -204,6 +329,68 @@ void Encoder<word>::Encode(Plaintext<word> &ptxt, int level, double scale,
   // overflow-check path already waits past the upload via its status readback.
   if (upload_done) RMM_CUDA_TRY(cudaEventSynchronize(upload_done.get()));
 }
+
+template <typename word>
+void Encoder<word>::Decode(std::vector<Complex> &message,
+                           const Plaintext<word> &ptxt) const {
+  const auto np = ptxt.GetNP();
+  const int slots = ptxt.GetNumSlots();
+  const double scale = ptxt.GetScale();
+  if (np.num_aux_ != 0 || np.GetNumQ() <= 0)
+    throw std::invalid_argument("Decode: requires a nonempty Q-only base");
+  if (slots <= 0 || slots > param_.degree_ / 2 || (slots & (slots - 1)))
+    throw std::invalid_argument("Decode: invalid slot count");
+  if (!std::isfinite(scale) || scale <= 0)
+    throw std::invalid_argument("Decode: scale must be finite and positive");
+  int log_slots = 0;
+  for (int n = slots; n > 1; n /= 2) ++log_slots;
+  const DeviceVector<uint64_t> *bounds = nullptr;
+  for (int level = 0; level <= param_.max_level_; ++level)
+    if (np == param_.LevelToNP(level)) { bounds = &decode_moduli_[level + 1]; break; }
+  if (!bounds && np == param_.LevelToNP(-1)) bounds = &decode_moduli_[0];
+  // Preserve Decode's support for valid Q bases outside the level table.
+  DeviceVector<uint64_t> temporary_bounds;
+  if (!bounds) { temporary_bounds = MakeDecodeModulus(np); bounds = &temporary_bounds; }
+  int num_limbs = bounds->size() / 2;
+  Plaintext<word> tmp;
+  tmp.ModifyNP(np);
+  auto view = tmp.View();
+  ntt_handler_.INTT(view, np, ptxt.ConstView(), true);
+  rmm::device_uvector<double2> data(slots, cudaStreamLegacy);
+  DeviceVector<word> digits(2 * slots * np.GetNumQ());
+  DeviceVector<uint64_t> limbs(2 * slots * num_limbs);
+  DecodeCRT<<<(2 * slots + 127) / 128, 128>>>(
+      data.data(), tmp.mx_.data(), digits.data(), limbs.data(), slots, log_slots,
+      param_.degree_, np.GetNumQ(), num_limbs, scale,
+      param_.GetPrimesPtr(np), param_.GetInvPrimesPtr(np), decode_inverses_.data(),
+      param_.L_, param_.GetMaxNumTer() - np.num_ter_, bounds->data());
+  RMM_CUDA_TRY(cudaGetLastError());
+  SpecialFFTGPU(data.data(), slots, false);
+  message.resize(slots);
+  RMM_CUDA_TRY(cudaMemcpy(message.data(), data.data(), slots * sizeof(double2),
+                          cudaMemcpyDeviceToHost));
+}
+
+template <typename word>
+void Encoder<word>::EncodeConstant(Constant<word> &constant, int level,
+                                   double scale, double number, int num_aux) const {
+  if (!std::isfinite(scale) || scale <= 0 || !std::isfinite(number) ||
+      !std::isfinite(number * scale))
+    throw std::invalid_argument("EncodeConstant: nonfinite value/product or invalid scale");
+  const auto np = param_.LevelToNP(level, num_aux);
+  constant.ModifyNP(np);
+  constant.SetScale(scale);
+  EncodeConstantRNS<<<(np.GetNumTotal() + 127) / 128, 128>>>(
+      constant.cx_.data(), number, scale, param_.GetPrimesPtr(np),
+      param_.GetInvPrimesPtr(np), montgomery_r2_.data(), np.GetNumTotal(), np.GetNumQ(),
+      param_.GetMaxNumTer() - np.num_ter_, param_.L_);
+  RMM_CUDA_TRY(cudaGetLastError());
+}
+
+template void Encoder<uint32_t>::Decode(std::vector<Complex> &, const Plaintext<uint32_t> &) const;
+template void Encoder<uint64_t>::Decode(std::vector<Complex> &, const Plaintext<uint64_t> &) const;
+template void Encoder<uint32_t>::EncodeConstant(Constant<uint32_t> &, int, double, double, int) const;
+template void Encoder<uint64_t>::EncodeConstant(Constant<uint64_t> &, int, double, double, int) const;
 
 template void Encoder<uint32_t>::Encode(Plaintext<uint32_t> &, int, double,
                                         const std::vector<Complex> &, int) const;

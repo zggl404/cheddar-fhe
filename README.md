@@ -269,7 +269,7 @@ Run `build/unittest/modswitch_test` for residue/metadata checks, decryption,
 invalid-target/base checks and exact comparison with all three legacy 32-bit
 presets, including main/terminal exchanges.
 
-## GPU encoding
+## GPU encoding and decoding
 
 The existing `Encode` API uses the GPU on both word widths:
 
@@ -292,7 +292,32 @@ need no overflow-status allocation or readback; inputs outside that proven range
 retain the GPU overflow check and status readback before NTT.
 
 `EncodeCPU` retains the host SpecialIFFT and BigInt conversion followed by GPU
-NTT. `Decode` and `EncodeConstant` retain their existing arithmetic paths.
+NTT. `Decode` now performs INTT, exact mixed-radix CRT reconstruction, centered
+integer conversion and SpecialFFT on the GPU; it transfers only the final complex
+slots back to the host. Modulus bounds and modular inverses are prepared once
+when constructing the encoder. CRT integers are reconstructed before conversion
+to double, avoiding cancellation of large floating-point CRT terms. The GPU
+conversion truncates low mantissa bits, matching GMP; a TomMath CPU reference may
+differ in its last floating-point bits.
+
+`EncodeConstant` runs exact truncation, RNS reduction and Montgomery conversion in
+one GPU kernel, retaining the scalar interface and scale metadata. Finite inputs,
+positive finite scale and finite scaled products are checked on the host. Explicit
+`DecodeCPU` and `EncodeConstantCPU` methods retain the reference implementations.
+Decode continues to support Q-only plaintexts, including terminal and short bases;
+auxiliary-prime plaintexts are rejected.
+
+```cpp
+std::vector<Complex> decoded;
+context->encoder_.Decode(decoded, pt);
+Constant<uint64_t> constant;
+context->encoder_.EncodeConstant(constant, level, scale, -0.25);
+```
+
+Run `build/unittest/codec_gpu_test` for CPU/GPU decoding comparisons, exact
+centered-CRT boundary cases, bitwise constant RNS comparisons and synchronized
+end-to-end timings. Single-constant GPU launches are small, so performance should
+be assessed with the measured chain length and call pattern.
 Run `build/unittest/encode_test` for CPU/GPU residue comparisons, decode checks,
 invalid-input checks and end-to-end timing (including upload and completion).
 

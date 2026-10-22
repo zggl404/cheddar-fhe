@@ -14,6 +14,9 @@ target_include_directories(parameter_literal_cpu_test PRIVATE ../include)
 add_executable(parameter_literal_test ParameterLiteral.cpp)
 target_link_libraries(parameter_literal_test PRIVATE cheddar gtest_main)
 
+add_executable(codec_gpu_test Codec.cpp)
+target_link_libraries(codec_gpu_test PRIVATE cheddar gtest_main)
+
 add_executable(encode_test Encode.cpp)
 target_link_libraries(encode_test PRIVATE cheddar gtest_main)
 

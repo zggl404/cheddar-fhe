@@ -14,9 +14,8 @@ namespace cheddar {
 
 /**
  * @brief Encoder class for encoding/decoding messages into plaintexts and
- * preparing constants. Encode runs SpecialIFFT, RNS conversion and NTT on the
- * GPU. EncodeCPU retains the reference implementation; Decode and EncodeConstant
- * still perform their host-side arithmetic on the CPU.
+ * preparing constants. Encode, Decode and EncodeConstant run their vector
+ * arithmetic on the GPU. Explicit CPU reference methods retain the host paths.
  *
  * @tparam word uint32_t or uint64_t
  */
@@ -30,6 +29,15 @@ class Encoder {
   std::vector<Complex> twiddle_factors_;
   rmm::device_uvector<double2> gpu_twiddle_factors_;
   DeviceVector<uint32_t> gpu_galois_factors_;
+  DeviceVector<word> montgomery_r2_;
+  DeviceVector<word> decode_inverses_;
+  // Each entry holds exact Q followed by floor(Q/2), in little-endian 64-bit limbs.
+  // Entry 0 is the short base (-1); entry level+1 is the configured Q base.
+  std::vector<DeviceVector<uint64_t>> decode_moduli_;
+
+  void PrepareDecodeTables();
+  DeviceVector<uint64_t> MakeDecodeModulus(const NPInfo &np) const;
+  void SpecialFFTGPU(double2 *data, int slots, bool inverse) const;
 
   int ValidateEncodeInput(const std::vector<Complex> &message, double scale,
                           double *max_component = nullptr) const;
@@ -73,15 +81,16 @@ class Encoder {
                  const std::vector<Complex> &message, int num_aux = 0) const;
 
   /**
-   * @brief Decode a plaintext into a complex message.
+   * @brief Decode on the GPU, returning complex slots to the host (Q-only).
    *
    * @param message output complex message
    * @param ptxt input plaintext (NTT-applied)
    */
   void Decode(std::vector<Complex> &message, const Plaintext<word> &ptxt) const;
+  void DecodeCPU(std::vector<Complex> &message, const Plaintext<word> &ptxt) const;
 
   /**
-   * @brief Encode a real number (double) into an RNS constant for a given level
+   * @brief Encode a real number on the GPU into an RNS constant for a given level
    * and scale.
    *
    * @param constant output RNS constant
@@ -92,6 +101,8 @@ class Encoder {
    */
   void EncodeConstant(Constant<word> &constant, int level, double scale,
                       double number, int num_aux = 0) const;
+  void EncodeConstantCPU(Constant<word> &constant, int level, double scale,
+                         double number, int num_aux = 0) const;
 
   /**
    * @brief Get the twiddle factor for a given index, which is used for special

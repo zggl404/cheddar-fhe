@@ -33,6 +33,51 @@ Encoder<word>::Encoder(const Parameter<word> &param,
   for (int i = 0; i < param.degree_ / 2; ++i)
     factors[i] = param.GetGaloisFactor(i);
   CopyHostToDevice(gpu_galois_factors_, factors);
+  PrepareDecodeTables();
+}
+
+template <typename word>
+void Encoder<word>::PrepareDecodeTables() {
+  const auto all = param_.GetPrimeVector(param_.LevelToNP(param_.max_level_, param_.alpha_));
+  const int count = param_.L_;
+  HostVector<word> r2(all.size()), inverses(count * count, 0);
+  for (size_t i = 0; i < all.size(); ++i)
+    r2[i] = primeutil::ToMontgomery(primeutil::ToMontgomery<word>(1, all[i]), all[i]);
+  for (int i = 0; i < count; ++i)
+    for (int j = 0; j < i; ++j)
+      inverses[i * count + j] = primeutil::ToMontgomery(
+          primeutil::InvMod(all[j], all[i]), all[i]);
+  CopyHostToDevice(montgomery_r2_, r2);
+  CopyHostToDevice(decode_inverses_, inverses);
+  for (int level = -1; level <= param_.max_level_; ++level)
+    decode_moduli_.push_back(MakeDecodeModulus(param_.LevelToNP(level)));
+  // Consume all temporary host tables before the constructor returns.
+  RMM_CUDA_TRY(cudaStreamSynchronize(cudaStreamLegacy));
+}
+
+template <typename word>
+DeviceVector<uint64_t> Encoder<word>::MakeDecodeModulus(const NPInfo &np) const {
+  std::vector<uint64_t> product{1};
+  for (word prime : param_.GetPrimeVector(np)) {
+    uint64_t carry = 0;
+    for (auto &limb : product) {
+      uint128_t value = uint128_t(limb) * prime + carry;
+      limb = uint64_t(value);
+      carry = uint64_t(value >> 64);
+    }
+    if (carry) product.push_back(carry);
+  }
+  const size_t limbs = product.size();
+  HostVector<uint64_t> bounds(2 * limbs);
+  for (size_t i = 0; i < limbs; ++i) {
+    bounds[i] = product[i];
+    bounds[limbs + i] = (product[i] >> 1) |
+        (i + 1 < limbs ? product[i + 1] << 63 : uint64_t(0));
+  }
+  DeviceVector<uint64_t> device_bounds(bounds.size());
+  RMM_CUDA_TRY(cudaMemcpy(device_bounds.data(), bounds.data(), bounds.size() * sizeof(uint64_t),
+                          cudaMemcpyHostToDevice));
+  return device_bounds;
 }
 
 template <typename word>
@@ -76,7 +121,7 @@ void Encoder<word>::EncodeWorker(Plaintext<word> &ptxt, int level, double scale,
 }
 
 template <typename word>
-void Encoder<word>::Decode(std::vector<Complex> &message,
+void Encoder<word>::DecodeCPU(std::vector<Complex> &message,
                            const Plaintext<word> &ptxt) const {
   // Message padding
   Plaintext<word> tmp;
@@ -281,7 +326,7 @@ void Encoder<word>::PlaintextToComplexVector(
 }
 
 template <typename word>
-void Encoder<word>::EncodeConstant(Constant<word> &constant, int level,
+void Encoder<word>::EncodeConstantCPU(Constant<word> &constant, int level,
                                    double scale, double number,
                                    int num_aux /*= 0*/) const {
   BigInt big_int(number * scale);
