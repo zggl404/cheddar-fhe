@@ -241,6 +241,30 @@ c++ -std=c++17 -O2 -Iinclude tests/parameter_literal_test.cpp \
 ./build/unittest/bootstrap_scale_probe 14-p5
 ```
 
+## Backend-aware modulus switching
+
+```cpp
+context->ModSwitch(output, input, target_level);
+context->ModSwitch(input, input, target_level); // In-place is also supported.
+```
+
+For 64-bit ciphertexts, this retains the requested main-Q prefix and preserves
+actual ciphertext scale, slot count and polynomial degree. It performs no rescale,
+NTT or key switching. In-place calls shrink the logical buffer lengths; out-of-place
+calls copy only retained residues. Terminal/P inputs and non-prefix targets are
+rejected, as are negative targets or attempts to raise the level.
+
+For 32-bit ciphertexts, `ModSwitch` delegates to the existing `LevelDown`, including
+its encoded-one multiplication, rescaling, scale evolution and preconditions.
+Thus the common API lowers the level but does not promise unchanged scale on the
+32-bit backend. The original `LevelDown` and all Boot preparation calls remain
+unchanged. A 64-bit ModSwitch result keeps `input.GetScale()`; it must not be reset
+to `param.GetScale(target_level)` merely because its level changed.
+
+Run `build/unittest/modswitch_test` for residue/metadata checks, decryption,
+invalid-target/base checks and exact comparison with all three legacy 32-bit
+presets, including main/terminal exchanges.
+
 ## License and Citing
 
 See the [License](./LICENSE).

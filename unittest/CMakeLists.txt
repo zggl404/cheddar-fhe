@@ -14,6 +14,9 @@ target_include_directories(parameter_literal_cpu_test PRIVATE ../include)
 add_executable(parameter_literal_test ParameterLiteral.cpp)
 target_link_libraries(parameter_literal_test PRIVATE cheddar gtest_main)
 
+add_executable(modswitch_test ModSwitch.cpp)
+target_link_libraries(modswitch_test PRIVATE cheddar gtest_main)
+
 add_executable(basic_test BasicTest.cpp)
 target_link_libraries(basic_test
                       PRIVATE cheddar gtest_main)
