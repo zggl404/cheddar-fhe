@@ -76,6 +76,44 @@ inline bool IsPrime(uint64_t n) {
   }
   return true;
 }
+// Shared by the literal resolver and high-level pool construction. Existing
+// primes in used are reserved across all Q/P families.
+template <typename Word>
+void GeneratePrimes(std::vector<Word>& primes, std::vector<int>& logs,
+                    std::set<uint64_t>& used, int log_degree,
+                    const std::string& name) {
+  constexpr int max_bits = sizeof(Word) * 8 - 1;
+  const uint64_t stride = 2ULL * (1ULL << log_degree);
+  for (int bits : logs) {
+    Require(bits > log_degree + 1 && bits <= max_bits,
+            name + ": log size outside supported word/NTT range");
+    const uint64_t target = 1ULL << bits;
+    const uint64_t lower = target >> 1;
+    const uint64_t upper = bits == max_bits ? target : target << 1;
+    uint64_t below = target - stride + 1, above = target + 1, p = 0;
+    // Search both sides to avoid a systematic downward scale bias. At the
+    // word limit, only the lower side is available. Ties choose below.
+    while (below >= lower || above < upper) {
+      uint64_t candidate;
+      if (above >= upper || (below >= lower && target - below <= above - target)) {
+        candidate = below;
+        below -= stride;
+      } else {
+        candidate = above;
+        above += stride;
+      }
+      if (!used.count(candidate) && parameter_detail::IsPrime(candidate)) {
+        p = candidate;
+        break;
+      }
+    }
+    Require(p != 0, name + ": exhausted NTT primes near log size " +
+                            std::to_string(bits));
+    primes.push_back(static_cast<Word>(p));
+    used.insert(p);
+  }
+  logs.clear();
+}
 }  // namespace parameter_detail
 
 // Plan over all prefix-count pairs; terminal primes may be exchanged for main
@@ -192,41 +230,12 @@ ParametersLiteral<Word> ResolveParametersLiteral(ParametersLiteral<Word> spec) {
   register_explicit(spec.main_primes, spec.log_main_primes, "main");
   register_explicit(spec.terminal_primes, spec.log_terminal_primes, "terminal");
   register_explicit(spec.auxiliary_primes, spec.log_auxiliary_primes, "auxiliary");
-  auto generate = [&](std::vector<Word>& primes, std::vector<int>& logs,
-                      const std::string& name) {
-    for (int bits : logs) {
-      Require(bits > spec.log_degree + 1 && bits <= max_bits,
-              name + ": log size outside supported word/NTT range");
-      const uint64_t target = 1ULL << bits;
-      const uint64_t lower = target >> 1;
-      const uint64_t upper = bits == max_bits ? target : target << 1;
-      uint64_t below = target - stride + 1, above = target + 1, p = 0;
-      // Search both sides to avoid a systematic downward scale bias. At the
-      // word limit, only the lower side is available. Ties choose below.
-      while (below >= lower || above < upper) {
-        uint64_t candidate;
-        if (above >= upper || (below >= lower && target - below <= above - target)) {
-          candidate = below;
-          below -= stride;
-        } else {
-          candidate = above;
-          above += stride;
-        }
-        if (!used.count(candidate) && parameter_detail::IsPrime(candidate)) {
-          p = candidate;
-          break;
-        }
-      }
-      Require(p != 0, name + ": exhausted NTT primes near log size " +
-                              std::to_string(bits));
-      primes.push_back(static_cast<Word>(p));
-      used.insert(p);
-    }
-    logs.clear();
-  };
-  generate(spec.main_primes, spec.log_main_primes, "main");
-  generate(spec.terminal_primes, spec.log_terminal_primes, "terminal");
-  generate(spec.auxiliary_primes, spec.log_auxiliary_primes, "auxiliary");
+  parameter_detail::GeneratePrimes(spec.main_primes, spec.log_main_primes,
+                                    used, spec.log_degree, "main");
+  parameter_detail::GeneratePrimes(spec.terminal_primes, spec.log_terminal_primes,
+                                    used, spec.log_degree, "terminal");
+  parameter_detail::GeneratePrimes(spec.auxiliary_primes, spec.log_auxiliary_primes,
+                                    used, spec.log_degree, "auxiliary");
   Require(!spec.auxiliary_primes.empty(), "auxiliary primes must not be empty");
   if (spec.level_config.empty()) PlanLevelConfig(spec);
   Require(spec.num_levels < 0 || static_cast<size_t>(spec.num_levels) + 1 == spec.level_config.size(),

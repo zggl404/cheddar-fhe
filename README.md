@@ -163,39 +163,77 @@ When supplying your own primes, allocate a matching Boot prime region; this opti
 does not replace that prime pool. Explicit rescale targets and actual EvalMod entry
 scale are checked for conflicts with the requested Boot scale.
 
-For the 64-bit backend, `BootConfig64` builds the complete prime pool and level
-budget from application settings, without manual chain construction:
+`BootConfig` describes the same logical requirements for either backend. Choose
+`Word` once when resolving parameters and creating the context:
 
 ```cpp
 #include "extension/BootParameterLiteral.h"
 #include "extension/BootContext.h"
 
-cheddar::BootConfig64 config;
+using Word = uint32_t; // Or uint64_t; the logical configuration is unchanged.
+cheddar::BootConfig config;
 config.ring_dimension = 65536;
 config.multiplicative_depth = 14; // Usable multiplication levels after Boot.
 config.slot_count = 32768;
-config.normal_scale_bits = 50;          // Normal computation.
+config.normal_scale_bits = 50;
 config.boot_scale_bits = 56;
-config.auxiliary_prime_count = 5;
-// First modulus is automatic; P primes default to 60 bits; CtS/StC default to 4/3.
+// Optional: nominal P bit budget; default 300. Do not reuse a physical P count
+// across word widths. CtS/StC default to 4/3.
+// config.auxiliary_modulus_bits = 300;
 
-auto resolved = cheddar::ResolveBootConfig(config); // CPU only; inspect parameters.
+auto resolved = cheddar::ResolveBootConfig<Word>(config); // CPU only.
 auto param = cheddar::NewParametersFromLiteral(resolved.parameters);
-auto context = cheddar::BootContext<uint64_t>::Create(*param, resolved.boot);
+auto context = cheddar::BootContext<Word>::Create(*param, resolved.boot);
 // Keep param alive while context is used. Encode resolved.slot_count values.
 ```
 
-This generates Q targets `[55, 50 x 17, 56 x 12]`, five approximately 60-bit P
-primes, max level 29 and Boot output level 14. Prime bit sizes are targets near
-powers of two. Omitting `config.boot_scale_bits` preserves the 64-bit default
-55. The checked high-level API currently requires N=65536 and a power-of-two slot
-count in [1,N/2]. It generates one Q prime per rescale level for the 64-bit backend;
-32-bit rational rescaling and custom prime pools remain available through the
-lower-level `ParametersLiteral` API. Parameter resolution does not establish
-security or guarantee precision for arbitrary settings.
+For this example both backends have max level 29 and Boot output level 14.
+The 64-bit backend generates Q targets `[55, 50 x 17, 56 x 12]` and five
+approximately 60-bit P primes. The 32-bit backend splits those logical Q targets
+into balanced factors with targets no larger than 30 bits and selects ten approximately
+31-bit P primes. Each logical level can contain multiple physical primes.
 
-By default, `first_modulus_bits = -1` selects the minimum target
-`normal_scale_bits + log_message_ratio`. With the default message-ratio log of 5:
+For 32-bit normal scales 31..49, small direct factors are scarce at N=65536.
+The resolver instead searches a bounded family of main/terminal prime pools,
+using the existing rational-rescale level planner for the normal region, then
+appends the Boot region. It checks the short-base constraints and selects the
+pool with the smallest normal rescale-target error, with a small first-modulus
+tie preference. This is deterministic parameter planning, not a precision proof.
+The actual scale at every usable normal level must be within 1 bit of its
+target; internal StC scales are allowed to vary. Other
+32-bit targets use direct splitting. Unsupported targets, exhausted prime
+pools or infeasible chains raise `std::invalid_argument`; custom rational pools
+remain available through `ParametersLiteral`.
+
+The current high-level 32-bit policy restricts normal scale targets to at most
+55 bits and short-base targets to at most 60 bits. A normal=56/Boot=56 experiment
+failed precision validation, so these settings are rejected before GPU setup;
+the exact arithmetic limitation is still unresolved. Some lower-scale/low-depth
+rational pools also have no feasible fit and are rejected. The lower-level
+literal API and existing 32-bit operators retain their previous behavior.
+
+Physical overrides `auxiliary_prime_count` and `auxiliary_prime_bits` remain
+available (`-1` selects automatic values). `auxiliary_modulus_bits` is a nominal
+target, not a lower bound on the actual product or a security guarantee. The
+existing `BootConfig64` plus non-template `ResolveBootConfig(config)` remains
+available with its original five 60-bit P defaults. `BootConfig32` aliases the
+new logical config; use `ResolveBootConfig<uint32_t>(config)` to resolve it.
+
+Prime bit sizes and scale bits are targets. Inspect `resolved.parameters` for
+the actual primes and `level_config`, and use `param->GetScale(level)` for the
+actual scale, which can differ more in the 32-bit backend. Omitting
+`boot_scale_bits` preserves backend defaults: 58 (32-bit), 55 (64-bit). Set it
+explicitly when comparing the same logical configuration. The checked API
+currently requires N=65536 and a power-of-two slot count in [1,N/2].
+
+Run `boot_config_test 32 50 56 32768 14 1` and the corresponding `64` command to
+check Boot and all 14 following ciphertext multiplication levels. Arguments are
+word bits, normal scale bits, Boot scale bits, slots, depth and MinKS flag.
+
+By default, `first_modulus_bits = -1` fits a short base at or above
+`normal_scale_bits + log_message_ratio`. The 32-bit backend can choose a larger
+base to fit available primes (for example, 20+20 bits for normal scale 30).
+For 64-bit mode, with the default message-ratio log of 5:
 
 | Normal scale bits | Automatic first modulus target |
 |---:|---:|

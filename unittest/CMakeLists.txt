@@ -28,6 +28,8 @@ target_link_libraries(basic_test
                       PRIVATE cheddar gtest_main)
 
 if (ENABLE_EXTENSION)
+  add_executable(boot_config_test ../tests/boot_config_test.cpp)
+  target_link_libraries(boot_config_test PRIVATE cheddar)
   add_executable(bootstrap_scale_probe ../tests/bootstrap_scale_probe.cpp)
   target_link_libraries(bootstrap_scale_probe PRIVATE cheddar)
   add_executable(boot_test Bootstrapping.cpp)

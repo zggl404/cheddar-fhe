@@ -236,6 +236,60 @@ void TestAutomaticFirstModulus() {
   std::cout << "Automatic first modulus checks passed\n";
 }
 
+void TestUnifiedBootConfig() {
+  BootConfig config;
+  config.boot_scale_bits = 56;
+  const auto wide = ResolveBootConfig<uint64_t>(config);
+  const auto narrow = ResolveBootConfig<uint32_t>(config);
+  const auto repeat = ResolveBootConfig<uint32_t>(config);
+  Check(wide.boot.GetEndLevel() == 14 && narrow.boot.GetEndLevel() == 14);
+  Check(wide.boot.GetMaxLevel() == 29 && narrow.boot.GetMaxLevel() == 29);
+  Check(wide.parameters.main_primes.size() == 30);
+  Check(narrow.parameters.main_primes.size() == 60);
+  Check(wide.parameters.auxiliary_primes.size() == 5);
+  Check(narrow.parameters.auxiliary_primes.size() == 10);
+  Check(narrow.parameters.main_primes == repeat.parameters.main_primes);
+  Check(narrow.parameters.level_config == repeat.parameters.level_config);
+  for (size_t i = 0; i < narrow.parameters.level_config.size(); ++i)
+    Check(narrow.parameters.level_config[i] == std::make_pair(int(2 * (i + 1)), 0));
+  for (uint32_t p : narrow.parameters.main_primes) Check(p < (1ULL << 31));
+  for (int scale : {30, 40, 50, 55}) {
+    config.normal_scale_bits = scale;
+    const auto result = ResolveBootConfig<uint32_t>(config);
+    Check(result.boot.GetEndLevel() == config.multiplicative_depth);
+    const auto base = result.parameters.level_config.front();
+    double bits = 0;
+    for (int i = 0; i < base.first; ++i) bits += std::log2(result.parameters.main_primes[i]);
+    for (int i = 0; i < base.second; ++i) bits += std::log2(result.parameters.terminal_primes[i]);
+    Check(std::lround(bits) >= scale + config.log_message_ratio);
+  }
+  config = {}; config.normal_scale_bits = 40; config.boot_scale_bits = 56;
+  config.multiplicative_depth = 3; config.slot_count = 8192;
+  const auto sparse = ResolveBootConfig<uint32_t>(config);
+  Check(sparse.boot.GetEndLevel() == 3 && sparse.slot_count == 8192);
+  config.normal_scale_bits = 35;
+  Check(ResolveBootConfig<uint32_t>(config).boot.GetEndLevel() == 3);
+  config = {};
+  config.auxiliary_modulus_bits = 400;
+  Check(ResolveBootConfig<uint32_t>(config).parameters.auxiliary_primes.size() == 13);
+  Check(ResolveBootConfig<uint64_t>(config).parameters.auxiliary_primes.size() == 7);
+  config.auxiliary_prime_count = 12;
+  Check(ResolveBootConfig<uint32_t>(config).parameters.auxiliary_primes.size() == 12);
+  config = {}; config.auxiliary_prime_bits = 60;
+  Invalid([&] { ResolveBootConfig<uint32_t>(config); });
+  for (int scale : {56, 57}) {
+    config = {}; config.normal_scale_bits = scale;
+    Invalid([&] { ResolveBootConfig<uint32_t>(config); });
+  }
+  config = {}; config.boot_scale_bits = 2147483647;
+  Invalid([&] { ResolveBootConfig<uint32_t>(config); });
+  config = {}; config.first_modulus_bits = 35;
+  Invalid([&] { ResolveBootConfig<uint32_t>(config); });
+  config = {}; config.auxiliary_modulus_bits = 0;
+  Invalid([&] { ResolveBootConfig<uint32_t>(config); });
+  std::cout << "Unified 32/64-bit Boot config checks passed\n";
+}
+
 int main() {
   Check(!parameter_detail::IsPrime(0));
   Check(!parameter_detail::IsPrime(1));
@@ -254,4 +308,5 @@ int main() {
   TestSeparateScales();
   TestBootConfig();
   TestAutomaticFirstModulus();
+  TestUnifiedBootConfig();
 }
