@@ -10,9 +10,12 @@
 using namespace cheddar;
 
 template <typename Word>
-void Run(const BootConfig& config, bool min_ks) {
-  const auto resolved = ResolveBootConfig<Word>(config);
+void Run(const BootConfig& config, bool min_ks, int dense = -1, int expected_dnum = -1) {
+  auto resolved = ResolveBootConfig<Word>(config);
+  if (dense > 0) resolved.parameters.dense_hamming_weight = dense;
   auto param = NewParametersFromLiteral(resolved.parameters);
+  if (expected_dnum > 0 && param->dnum_ != expected_dnum)
+    throw std::runtime_error("compiler/parameter dnum mismatch");
   auto context = BootContext<Word>::Create(*param, resolved.boot);
   UserInterface<Word> client(context);
   const int slots = resolved.slot_count;
@@ -40,6 +43,8 @@ void Run(const BootConfig& config, bool min_ks) {
     if (error >= 1e-3) throw std::runtime_error("error exceeds 1e-3");
   };
   std::cout << "Q_count=" << param->L_ << " P_count=" << param->alpha_
+            << " terminal_count=" << resolved.parameters.terminal_primes.size()
+            << " dnum=" << param->dnum_
             << " max_level=" << param->max_level_ << std::endl;
   Plaintext<Word> pt;
   context->encoder_.Encode(pt, 0, param->GetScale(0), message);
@@ -82,8 +87,8 @@ void Run(const BootConfig& config, bool min_ks) {
 
 int main(int argc, char** argv) {
   try {
-    if (argc != 7) {
-      std::cerr << "usage: boot_config_test word_bits normal_bits boot_bits slots depth min_ks\n";
+    if (argc != 7 && argc != 12) {
+      std::cerr << "usage: boot_config_test word_bits normal_bits boot_bits slots depth min_ks [first_bits message_ratio P_budget dense_h expected_dnum]\n";
       return 2;
     }
     BootConfig config;
@@ -91,8 +96,16 @@ int main(int argc, char** argv) {
     config.boot_scale_bits = std::stoi(argv[3]);
     config.slot_count = std::stoi(argv[4]);
     config.multiplicative_depth = std::stoi(argv[5]);
-    if (std::string(argv[1]) == "32") Run<uint32_t>(config, std::stoi(argv[6]) != 0);
-    else if (std::string(argv[1]) == "64") Run<uint64_t>(config, std::stoi(argv[6]) != 0);
+    int dense = -1, expected_dnum = -1;
+    if (argc == 12) {
+      config.first_modulus_bits = std::stoi(argv[7]);
+      config.log_message_ratio = std::stoi(argv[8]);
+      config.auxiliary_modulus_bits = std::stoi(argv[9]);
+      dense = std::stoi(argv[10]);
+      expected_dnum = std::stoi(argv[11]);
+    }
+    if (std::string(argv[1]) == "32") Run<uint32_t>(config, std::stoi(argv[6]) != 0, dense, expected_dnum);
+    else if (std::string(argv[1]) == "64") Run<uint64_t>(config, std::stoi(argv[6]) != 0, dense, expected_dnum);
     else throw std::invalid_argument("word_bits must be 32 or 64");
   } catch (const std::exception& error) {
     std::cerr << error.what() << std::endl;

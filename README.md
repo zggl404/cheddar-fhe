@@ -193,17 +193,28 @@ approximately 60-bit P primes. The 32-bit backend splits those logical Q targets
 into balanced factors with targets no larger than 30 bits and selects ten approximately
 31-bit P primes. Each logical level can contain multiple physical primes.
 
-For 32-bit normal scales 31..49, small direct factors are scarce at N=65536.
-The resolver instead searches a bounded family of main/terminal prime pools,
-using the existing rational-rescale level planner for the normal region, then
-appends the Boot region. It checks the short-base constraints and selects the
-pool with the smallest normal rescale-target error, with a small first-modulus
-tie preference. This is deterministic parameter planning, not a precision proof.
-The actual scale at every usable normal level must be within 1 bit of its
-target; internal StC scales are allowed to vary. Other
-32-bit targets use direct splitting. Unsupported targets, exhausted prime
-pools or infeasible chains raise `std::invalid_argument`; custom rational pools
-remain available through `ParametersLiteral`.
+The resolver first tries the existing direct split and returns it unchanged when
+it resolves successfully. Only an insufficient prime pool or infeasible chain
+triggers alternatives. For 32-bit scale50 it next tries the GPU-validated mixed
+structure: normal transitions alternate 26+24 and 25+25; short-base and Boot
+transitions retain their requested targets (for example 30+30 and 28+27).
+Each mixed transition keeps its explicit physical-prime boundary, and the actual
+scale at every usable normal level must be within 1 bit of its target.
+
+If direct and mixed pools cannot be resolved, the 32-bit backend searches a
+bounded family of main/terminal pools using the rational-rescale level planner,
+then appends the Boot region. It checks the short-base constraints and selects
+the pool with the smallest normal rescale-target error, with a small first-modulus
+tie preference. The same actual normal-scale constraint applies; StC internal
+scales may vary. The caller's P budget or explicit P overrides are retained in
+every candidate. This is deterministic planning, not a precision proof.
+Unsupported targets or infeasible pools raise `std::invalid_argument`.
+
+For the scale50/Boot55/first60/message-ratio10 profile, depth16 with P target660
+retains its original direct chain (64 main, 0 terminal, 22 P); depth18 with P
+target720 uses the mixed chain (68 main, 0 terminal, 24 P). Both have dnum=3.
+The P target is nominal: `ceil(720/31)` selects 24 primes; the earlier custom
+23-prime pool was derived from Q count/dnum and is not the same P budget policy.
 
 The current high-level 32-bit policy restricts normal scale targets to at most
 55 bits and short-base targets to at most 60 bits. A normal=56/Boot=56 experiment
@@ -229,6 +240,12 @@ currently requires N=65536 and a power-of-two slot count in [1,N/2].
 Run `boot_config_test 32 50 56 32768 14 1` and the corresponding `64` command to
 check Boot and all 14 following ciphertext multiplication levels. Arguments are
 word bits, normal scale bits, Boot scale bits, slots, depth and MinKS flag.
+Optional trailing arguments set first-modulus bits, message-ratio log, nominal
+P budget, dense secret weight and expected dnum. For the capacity regression:
+
+```sh
+boot_config_test 32 50 55 32768 18 0 60 10 720 192 3
+```
 
 By default, `first_modulus_bits = -1` fits a short base at or above
 `normal_scale_bits + log_message_ratio`. The 32-bit backend can choose a larger

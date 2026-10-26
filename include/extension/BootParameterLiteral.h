@@ -195,100 +195,125 @@ ResolvedBootConfig<Word> ResolveBootConfig(const BootConfig& config) {
   spec.default_encryption_level = lower_levels;
   const int boot_bits = config.boot_scale_bits < 0
                             ? (sizeof(Word) == 4 ? 58 : 55) : config.boot_scale_bits;
-  // Each logical transition may remove multiple physical primes. Balanced
-  // factors preserve the requested total bit target without changing Rescale.
-  auto append_group = [&](int bits) {
+  // Keep the successful direct path byte-for-byte reproducible. Alternative
+  // pools are considered only after resolution or Boot validation fails.
+  auto append_group = [&](ParametersLiteral<Word>& pool, int bits) {
     const int count = (bits + q_limit - 1) / q_limit;
     Require(bits >= count * 20 || (count == 1 && bits >= 18),
-            "32-bit prime splitting cannot represent this bit target with primes >=20 bits; "
-            "use ParametersLiteral for a rational-rescale pool");
+            "prime splitting cannot represent this target with primes >=20 bits");
     for (int i = 0; i < count; ++i)
-      spec.log_main_primes.push_back(bits / count + (i < bits % count));
+      pool.log_main_primes.push_back(bits / count + (i < bits % count));
   };
+  auto finish = [&](ParametersLiteral<Word> pool) -> ResolvedBootConfig<Word> {
+    auto resolved = ResolveBootParametersLiteral(std::move(pool), boot_literal);
+    auto boot = NewBootParametersFromLiteral(resolved, boot_literal);
+    return {std::move(resolved), boot, config.slot_count};
+  };
+  auto score_normal_chain = [&](const ParametersLiteral<Word>& pool) {
+    double previous = 0, score = 0, scale = config.normal_scale_bits;
+    for (int level = 0; level <= lower_levels; ++level) {
+      const auto [m, t] = pool.level_config[level];
+      double bits = 0;
+      for (int i = 0; i < m; ++i) bits += std::log2(pool.main_primes[i]);
+      for (int i = 0; i < t; ++i) bits += std::log2(pool.terminal_primes[i]);
+      if (level == 0) {
+        const int base_bits = static_cast<int>(std::lround(bits));
+        if (m + t > 2 || base_bits < minimum_first_bits || base_bits > 60 ||
+            base_bits - minimum_first_bits > 30 ||
+            (config.first_modulus_bits != -1 && base_bits != first_bits))
+          return std::numeric_limits<double>::infinity();
+        score = 0.001 * std::pow(bits - first_bits, 2);
+      } else {
+        const double error = bits - previous - config.normal_scale_bits;
+        scale = (scale + bits - previous) / 2;
+        if (level <= config.multiplicative_depth &&
+            std::abs(scale - config.normal_scale_bits) > 1.0)
+          return std::numeric_limits<double>::infinity();
+        score += error * error;
+      }
+      previous = bits;
+    }
+    return score;
+  };
+  std::string failure;
+  try {
+    auto direct = spec;
+    append_group(direct, first_bits);
+    for (int i = 0; i < lower_levels; ++i) append_group(direct, config.normal_scale_bits);
+    for (int i = 0; i < internal_levels; ++i) append_group(direct, boot_bits);
+    direct.log_auxiliary_primes.assign(aux_count, aux_bits);
+    return finish(std::move(direct));
+  } catch (const std::invalid_argument& error) {
+    if constexpr (sizeof(Word) == 8) throw;
+    failure = std::string("direct pool: ") + error.what();
+  }
   if constexpr (sizeof(Word) == 4) {
-    if (config.normal_scale_bits > q_limit && config.normal_scale_bits < 50) {
-      // Small direct factors are scarce at N=65536. Reuse the existing rational
-      // level planner with a bounded family of larger main/terminal pools.
-      const auto prototype = spec;
-      double best = std::numeric_limits<double>::infinity();
-      for (int main_bits : {30, 29, 31}) {
-        for (int terminal_bits : {25, 26, 27, 28, 20}) {
-          for (int terminals = 1; terminals <= 6; ++terminals) {
-            const int mains = static_cast<int>(std::lround(
-                double(first_bits + lower_levels * config.normal_scale_bits -
-                       terminals * terminal_bits) / main_bits));
-            if (mains <= 0) continue;
-            auto candidate = prototype;
-            candidate.log_main_primes.assign(mains, main_bits);
-            candidate.log_terminal_primes.assign(terminals, terminal_bits);
-            candidate.log_auxiliary_primes.assign(aux_count, aux_bits);
-            try {
-              candidate = ResolveParametersLiteral(candidate);
-              double previous = 0, score = 0, scale = config.normal_scale_bits;
-              for (int level = 0; level <= lower_levels; ++level) {
-                const auto [m, t] = candidate.level_config[level];
-                double bits = 0;
-                for (int i = 0; i < m; ++i) bits += std::log2(candidate.main_primes[i]);
-                for (int i = 0; i < t; ++i) bits += std::log2(candidate.terminal_primes[i]);
-                if (level == 0) {
-                  const int base_bits = static_cast<int>(std::lround(bits));
-                  if (m + t > 2 ||
-                      base_bits < minimum_first_bits || base_bits > 60 ||
-                      base_bits - minimum_first_bits > 30 ||
-                      (config.first_modulus_bits != -1 && base_bits != first_bits)) {
-                    score = std::numeric_limits<double>::infinity();
-                    break;
-                  }
-                  score = 0.001 * std::pow(bits - first_bits, 2);
-                } else {
-                  const double error = bits - previous - config.normal_scale_bits;
-                  scale = (scale + bits - previous) / 2;
-                  if (level <= config.multiplicative_depth &&
-                      std::abs(scale - config.normal_scale_bits) > 1.0) {
-                    score = std::numeric_limits<double>::infinity();
-                    break;
-                  }
-                  score += error * error;
-                }
-                previous = bits;
-              }
-              if (score < best) { best = score; spec = std::move(candidate); }
-            } catch (const std::invalid_argument&) {
-              // Candidate has insufficient primes or no legal rational chain.
-            }
+    if (config.normal_scale_bits == 50) {
+      try {
+        auto mixed = spec;
+        append_group(mixed, first_bits);
+        mixed.level_config.emplace_back(mixed.log_main_primes.size(), 0);
+        for (int i = 0; i < lower_levels; ++i) {
+          // The GPU-validated scale50 structure spreads demand across windows.
+          mixed.log_main_primes.push_back(i % 2 ? 25 : 26);
+          mixed.log_main_primes.push_back(i % 2 ? 25 : 24);
+          mixed.level_config.emplace_back(mixed.log_main_primes.size(), 0);
+        }
+        for (int i = 0; i < internal_levels; ++i) {
+          append_group(mixed, boot_bits);
+          mixed.level_config.emplace_back(mixed.log_main_primes.size(), 0);
+        }
+        mixed.num_levels = lower_levels + internal_levels;
+        mixed.log_auxiliary_primes.assign(aux_count, aux_bits);
+        auto result = finish(std::move(mixed));
+        Require(std::isfinite(score_normal_chain(result.parameters)),
+                "mixed pool exceeds normal-scale/short-base constraints");
+        return result;
+      } catch (const std::invalid_argument& error) {
+        failure += std::string("; mixed pool: ") + error.what();
+      }
+    }
+    // Last resort: reuse the rational-rescale planner with the same P budget.
+    double best = std::numeric_limits<double>::infinity();
+    ParametersLiteral<Word> rational;
+    for (int main_bits : {30, 29, 31}) {
+      for (int terminal_bits : {25, 26, 27, 28, 20}) {
+        for (int terminals = 1; terminals <= 6; ++terminals) {
+          const int mains = static_cast<int>(std::lround(
+              double(first_bits + lower_levels * config.normal_scale_bits -
+                     terminals * terminal_bits) / main_bits));
+          if (mains <= 0) continue;
+          auto candidate = spec;
+          candidate.log_main_primes.assign(mains, main_bits);
+          candidate.log_terminal_primes.assign(terminals, terminal_bits);
+          candidate.log_auxiliary_primes.assign(aux_count, aux_bits);
+          try {
+            candidate = ResolveParametersLiteral(std::move(candidate));
+            const double score = score_normal_chain(candidate);
+            if (score < best) { best = score; rational = std::move(candidate); }
+          } catch (const std::invalid_argument&) {
+            // Insufficient primes or no legal rational chain for this candidate.
           }
         }
       }
-      Require(std::isfinite(best), "no feasible 32-bit rational prime pool within 1 bit of the usable normal scales");
-      // Add the Boot region to the resolved normal chain. Reserve all selected
-      // primes before generating the new ones, keeping the normal chain intact.
-      for (int i = 0; i < internal_levels; ++i) {
-        append_group(boot_bits);
-        spec.level_config.emplace_back(
-            spec.main_primes.size() + spec.log_main_primes.size(),
-            spec.terminal_primes.size());
-      }
-      spec.num_levels = lower_levels + internal_levels;
     }
-  }
-  if (spec.level_config.empty()) {
-    append_group(first_bits);
-    for (int i = 0; i < lower_levels; ++i) append_group(config.normal_scale_bits);
-    for (int i = 0; i < internal_levels; ++i) append_group(boot_bits);
-    spec.log_auxiliary_primes.assign(aux_count, aux_bits);
-
-  }
-  if (!spec.main_primes.empty() && !spec.log_main_primes.empty()) {
+    Require(std::isfinite(best), failure + "; no feasible rational pool");
+    for (int i = 0; i < internal_levels; ++i) {
+      append_group(rational, boot_bits);
+      rational.level_config.emplace_back(
+          rational.main_primes.size() + rational.log_main_primes.size(),
+          rational.terminal_primes.size());
+    }
+    rational.num_levels = lower_levels + internal_levels;
     std::set<uint64_t> used;
-    for (auto prime : spec.main_primes) used.insert(prime);
-    for (auto prime : spec.terminal_primes) used.insert(prime);
-    for (auto prime : spec.auxiliary_primes) used.insert(prime);
-    parameter_detail::GeneratePrimes(spec.main_primes, spec.log_main_primes,
-                                    used, spec.log_degree, "main");
+    for (auto prime : rational.main_primes) used.insert(prime);
+    for (auto prime : rational.terminal_primes) used.insert(prime);
+    for (auto prime : rational.auxiliary_primes) used.insert(prime);
+    parameter_detail::GeneratePrimes(rational.main_primes, rational.log_main_primes,
+                                    used, rational.log_degree, "main");
+    return finish(std::move(rational));
   }
-  auto resolved = ResolveBootParametersLiteral(spec, boot_literal);
-  auto boot = NewBootParametersFromLiteral(resolved, boot_literal);
-  return {std::move(resolved), boot, config.slot_count};
+
 }
 
 // Legacy field-based 64-bit entry point, preserving its physical P defaults.

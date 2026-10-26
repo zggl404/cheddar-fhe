@@ -290,6 +290,56 @@ void TestUnifiedBootConfig() {
   std::cout << "Unified 32/64-bit Boot config checks passed\n";
 }
 
+void TestCapacityFallback() {
+  BootConfig config;
+  config.normal_scale_bits = 50;
+  config.boot_scale_bits = 55;
+  config.first_modulus_bits = 60;
+  config.log_message_ratio = 10;
+  for (int normal : {19, 21}) {
+    config.multiplicative_depth = normal - 3;
+    config.auxiliary_modulus_bits = normal == 19 ? 660 : 720;
+    const auto result = ResolveBootConfig<uint32_t>(config);
+    ParametersLiteral<uint32_t> baseline;
+    baseline.log_default_scale = 50;
+    baseline.log_base_modulus = 60;
+    baseline.default_encryption_level = normal;
+    baseline.log_main_primes = {30, 30};
+    for (int i = 0; i < normal; ++i) {
+      baseline.log_main_primes.push_back(normal == 19 ? 25 : (i % 2 ? 25 : 26));
+      baseline.log_main_primes.push_back(normal == 19 ? 25 : (i % 2 ? 25 : 24));
+    }
+    for (int i = 0; i < 12; ++i) {
+      baseline.log_main_primes.push_back(28);
+      baseline.log_main_primes.push_back(27);
+    }
+    const int p_count = normal == 19 ? 22 : 24;
+    baseline.log_auxiliary_primes.assign(p_count, 31);
+    if (normal == 21) {
+      baseline.num_levels = normal + 12;
+      for (int level = 0; level <= normal + 12; ++level)
+        baseline.level_config.emplace_back(2 + 2 * level, 0);
+    }
+    const BootParametersLiteral boot{4, 3, 10, 55};
+    const auto expected = ResolveBootParametersLiteral(baseline, boot);
+    Check(result.parameters.main_primes == expected.main_primes);
+    Check(result.parameters.terminal_primes == expected.terminal_primes);
+    Check(result.parameters.auxiliary_primes == expected.auxiliary_primes);
+    Check(result.parameters.level_config == expected.level_config);
+    Check(result.boot.GetEndLevel() == normal - 3);
+    Check((result.parameters.main_primes.size() + p_count - 1) / p_count == 3);
+    const auto again = ResolveBootConfig<uint32_t>(config);
+    Check(result.parameters.main_primes == again.parameters.main_primes);
+  }
+  // Both direct and mixed scale50 windows are exhausted at this depth.
+  config.multiplicative_depth = 38;  // normal level 41.
+  const auto rational = ResolveBootConfig<uint32_t>(config);
+  Check(!rational.parameters.terminal_primes.empty());
+  Check(rational.parameters.auxiliary_primes.size() == 24);
+  Check(rational.boot.GetEndLevel() == 38);
+  std::cout << "Capacity fallback and preserved P budget checks passed\n";
+}
+
 int main() {
   Check(!parameter_detail::IsPrime(0));
   Check(!parameter_detail::IsPrime(1));
@@ -309,4 +359,5 @@ int main() {
   TestBootConfig();
   TestAutomaticFirstModulus();
   TestUnifiedBootConfig();
+  TestCapacityFallback();
 }
