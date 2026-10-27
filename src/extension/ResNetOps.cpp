@@ -15,9 +15,11 @@ void Edge(Diagonals& diagonals, int dst, int src, double value) {
 }  // namespace
 
 PackedLinear::PackedLinear(std::shared_ptr<Boot> context, Diagonals diagonals,
-    const std::vector<double>& bias, int level, int baby_step)
-    : context_(std::move(context)), level_(level), num_diagonals_(diagonals.size()) {
-  Require(level > 0 && !diagonals.empty() && int(bias.size()) == kSlots,
+    const std::vector<double>& bias, int level, int baby_step,
+    std::vector<std::pair<int,int>> input_traces)
+    : context_(std::move(context)), level_(level), num_diagonals_(diagonals.size()),
+      input_traces_(std::move(input_traces)) {
+  Require(level > 0 && !diagonals.empty() && int(bias.size())==kSlots,
           "invalid affine transform");
   Require(baby_step > 0 && baby_step <= 128 && !(baby_step & (baby_step-1)),
           "baby step must be a power of two in [1,128]");
@@ -35,12 +37,20 @@ PackedLinear::PackedLinear(std::shared_ptr<Boot> context, Diagonals diagonals,
 }
 void PackedLinear::AddRequiredRotations(EvkRequest& req) const {
   linear_->AddRequiredRotations(req);
+  for(auto [stride,count]:input_traces_)
+    for(int n=1;n<count;n*=2) req.AddRequest(stride*n,level_);
 }
 void PackedLinear::Evaluate(Ct& output, const Ct& input, const EvkMap<Word>& keys) const {
   Require(context_->param_.NPToLevel(input.GetNP()) == level_, "linear input level mismatch");
+  Require(input.GetNumSlots()==kSlots, "ResNet linear input must have 16384 slots");
   context_->AssertSameScale(input.GetScale(), context_->param_.GetScale(level_));
-  Ct result;
-  linear_->Evaluate(context_, result, input, keys);
+  Ct result,traced;
+  const Ct* operand=&input;
+  for(auto [stride,count]:input_traces_) {
+    context_->Trace(traced,stride,count,*operand,keys);
+    operand=&traced;
+  }
+  linear_->Evaluate(context_, result, *operand, keys);
   context_->Add(output, result, bias_);
 }
 
@@ -49,6 +59,8 @@ std::unique_ptr<PackedLinear> MakeConv(std::shared_ptr<Boot> context,
   Require(std::isfinite(range) && range>0,"invalid activation normalization");
   CheckConv(input, weight, bias, stride);
   Tensor output(weight.shape[0], input.width/stride, input.pack*stride);
+  // RTX 5090 measurements favor different splits for the interleaved stages.
+  if(bs==0) bs=output.channels==32 || (output.channels==64 && input.channels==32)?128:64;
   Diagonals diagonals;
   const int kernel = weight.shape[2], pad = kernel/2;
   // Matrix construction is separate from the CHW CPU convolution reference.
@@ -76,10 +88,11 @@ std::unique_ptr<PackedLinear> MakePool(std::shared_ptr<Boot> context,
     const Tensor& input, int bs) {
   Require(input.channels==64 && input.width==8 && input.pack==4, "invalid pooling shape");
   Diagonals diagonals;
-  for(int c=0;c<64;++c)
-    for(int y=0;y<8;++y)
-      for(int x=0;x<8;++x) Edge(diagonals,c,input.Slot(c,y,x),1.0/64);
-  return std::make_unique<PackedLinear>(context,std::move(diagonals),std::vector<double>(kSlots),2,bs);
+  // Sum each channel's 8x8 grid before gathering its anchor into slot c.
+  // The gather masks all other slots and performs the original level 2->1 step.
+  for(int c=0;c<64;++c) Edge(diagonals,c,input.Slot(c,0,0),1.0/64);
+  return std::make_unique<PackedLinear>(context,std::move(diagonals),std::vector<double>(kSlots),
+      2,bs?bs:16,std::vector<std::pair<int,int>>{{4,8},{128,8}});
 }
 std::unique_ptr<PackedLinear> MakeClassifier(std::shared_ptr<Boot> context,
     const Weight& weight, const Weight& bias, int bs, double range) {
@@ -91,7 +104,7 @@ std::unique_ptr<PackedLinear> MakeClassifier(std::shared_ptr<Boot> context,
     for(int in=0;in<64;++in) Edge(diagonals,out,in,weight.values[out*64+in]);
   std::vector<double> packed_bias(kSlots);
   for(int c=0;c<10;++c) packed_bias[c]=bias.values[c]/range;
-  return std::make_unique<PackedLinear>(context,std::move(diagonals),packed_bias,1,bs);
+  return std::make_unique<PackedLinear>(context,std::move(diagonals),packed_bias,1,bs?bs:16);
 }
 
 EvalReLU::EvalReLU(std::shared_ptr<Boot> context) : context_(std::move(context)) {

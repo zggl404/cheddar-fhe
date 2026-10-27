@@ -12,17 +12,17 @@ using namespace cheddar;
 using namespace cheddar::resnet;
 namespace {
 using Clock=std::chrono::steady_clock;
-BootConfig ResNetConfig() {
+BootConfig ResNetConfig(int scale_bits) {
   BootConfig config;
   config.ring_dimension=65536;
   config.slot_count=kSlots;
-  config.multiplicative_depth=8;  // Boot output; StC starts three levels above.
-  config.normal_scale_bits=48;
+  config.multiplicative_depth=8;  // Usable output level after Boot.
+  config.normal_scale_bits=scale_bits;
   config.boot_scale_bits=58;
-  config.first_modulus_bits=56;
-  config.auxiliary_modulus_bits=403;  // 13 approximately 31-bit P primes.
+  config.first_modulus_bits=scale_bits==40?50:56;
+  config.auxiliary_modulus_bits=scale_bits==40?341:403;
   config.num_cts_levels=4;
-  config.num_stc_levels=3;
+  config.num_stc_levels=scale_bits==40?4:3;
   config.log_message_ratio=5;
   return config;
 }
@@ -61,7 +61,7 @@ void PrintParameters(const BootConfig& config,const Parameter<Word>& param,const
 }
 struct Options {
   std::string weights, cifar, mode="full";
-  int start=0, count=1, max_blocks=1, probe_stage=2, baby_step=32;
+  int start=0, count=1, max_blocks=1, probe_stage=2, baby_step=0, scale_bits=40;
   double relu_range=kRange;
 };
 Options Parse(int argc,char** argv) {
@@ -78,6 +78,7 @@ Options Parse(int argc,char** argv) {
     else if(a=="--max-blocks") o.max_blocks=std::stoi(v);
     else if(a=="--probe-stage") o.probe_stage=std::stoi(v);
     else if(a=="--baby-step") o.baby_step=std::stoi(v);
+    else if(a=="--scale-bits") o.scale_bits=std::stoi(v);
     else if(a=="--relu-range") o.relu_range=std::stod(v);
     else throw std::runtime_error("unknown option: "+a);
   }
@@ -86,6 +87,9 @@ Options Parse(int argc,char** argv) {
   Require(o.start>=0 && o.count>0 && o.start+o.count<=10000,"invalid image range");
   Require(o.max_blocks>=0 && o.probe_stage>=2 && o.probe_stage<=3,"invalid block/projection request");
   Require(std::isfinite(o.relu_range) && o.relu_range>0,"invalid ReLU range");
+  Require(o.scale_bits==40 || o.scale_bits==48,"--scale-bits requires 40 or 48");
+  Require(o.baby_step==0 || (o.baby_step>0 && o.baby_step<=128 && !(o.baby_step & (o.baby_step-1))),
+          "--baby-step requires 0 (automatic) or a power of two in [1,128]");
   if(o.mode!="encode" && o.mode!="relu" && o.mode!="boot") Require(!o.weights.empty() && !o.cifar.empty(),"--weights and --cifar required");
   return o;
 }
@@ -162,7 +166,8 @@ class Runner {
       Pt plaintext; client_.Decrypt(plaintext,ciphertext);
       std::vector<Complex> values; context_->encoder_.Decode(values,plaintext);
       auto expected=Pack(reference,range_), fp=Pack(exact,range_);
-      Require(values.size()==expected.size(),"slot count mismatch at "+name);
+      Require(ciphertext.GetNumSlots()==kSlots && values.size()==expected.size(),
+              "ResNet requires 16384 slots at "+name);
       double error=0,imaginary=0,approximation=0;
       for(size_t i=0;i<values.size();++i) {
         Require(std::isfinite(values[i].real()) && std::isfinite(values[i].imag()),"nonfinite ciphertext at "+name);
@@ -171,7 +176,8 @@ class Runner {
         approximation=std::max(approximation,std::abs(expected[i]-fp[i])*range_);
       }
       max_error=std::max(max_error,std::max(error,imaginary));
-      std::cout<<"CHECK name="<<name<<" level="<<context_->param_.NPToLevel(ciphertext.GetNP())
+      std::cout<<"CHECK name="<<name<<" slots="<<values.size()
+               <<" level="<<context_->param_.NPToLevel(ciphertext.GetNP())
                <<" log_scale="<<std::log2(ciphertext.GetScale())<<" max_abs_error="<<error
                <<" max_imag="<<imaginary<<" polynomial_vs_relu="<<approximation<<std::endl;
       Require(error<=1e-2 && imaginary<=1e-2,"ciphertext numerical gate failed at "+name);
@@ -306,12 +312,13 @@ int main(int argc,char** argv) {
     if(!options.weights.empty()) model=LoadModel(options.weights);
     if(options.mode=="reference") {Reference(options,model);return 0;}
     Encoder<Word>::SetGpuOnlyEncoding(true);
-    const auto config=ResNetConfig();
+    const auto config=ResNetConfig(options.scale_bits);
     const auto resolve_begin=Clock::now();
     const auto resolved=ResolveBootConfig<Word>(config);
     const double resolve_ms=std::chrono::duration<double,std::milli>(Clock::now()-resolve_begin).count();
     Require(resolved.slot_count==kSlots && resolved.boot.GetEndLevel()==8 &&
-            resolved.boot.GetStCStartLevel()==11,"resolved parameters do not match the ResNet schedule");
+            resolved.boot.GetStCStartLevel()==8+config.num_stc_levels,
+            "resolved parameters do not match the ResNet schedule");
     std::unique_ptr<Parameter<Word>> param;
     std::shared_ptr<Boot> context;
     std::unique_ptr<UserInterface<Word>> client;
@@ -382,6 +389,8 @@ int main(int argc,char** argv) {
       std::cout<<"RESULT {\"status\":\"PASS\",\"mode\":\""<<options.mode<<"\",\"depth\":"<<model.depth
         <<",\"image\":"<<image<<",\"label\":"<<label<<",\"prediction\":"<<prediction
         <<",\"relu_range\":"<<options.relu_range
+        <<",\"baby_step\":"<<options.baby_step
+        <<",\"final_slots\":"<<runner.ciphertext.GetNumSlots()
         <<",\"polynomial_top1\":"<<(options.mode=="full"?Top1(runner.reference):-1)
         <<",\"relu_top1\":"<<(options.mode=="full"?Top1(runner.exact):-1)
         <<",\"max_abs_error\":"<<runner.max_error<<",\"init_ms\":"<<init_ms

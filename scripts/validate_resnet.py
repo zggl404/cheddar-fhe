@@ -76,8 +76,9 @@ def main():
             raise RuntimeError(f'{name}: unexpected result count')
         if not parameters or not gpu_only_pass:
             raise RuntimeError(f'{name}: missing parameter/encoding audit')
-        if (parameters['initialization'] != 'BootConfig' or parameters['boot_output_level'] != 8
-                or parameters['default_encryption_level'] != 11 or parameters['stc_start_level'] != 11):
+        if (parameters['initialization'] != 'BootConfig' or parameters['normal_scale_bits'] != 40
+                or parameters['slots'] != 16384 or parameters['boot_output_level'] != 8
+                or parameters['default_encryption_level'] != 12 or parameters['stc_start_level'] != 12):
             raise RuntimeError(f'{name}: unexpected parameter initialization or level budget')
         if 'parameters' in report and report['parameters'] != parameters:
             raise RuntimeError(f'{name}: resolved parameters changed between stages')

@@ -84,12 +84,13 @@ inline std::vector<double> RescaleChebyshev(const std::vector<double>& p,
   return out;
 }
 inline const std::array<std::vector<double>,3>& StableSignPolynomials() {
-  // z1=p1(x)/2; z2=p2(2*z1)/2; z3=p3(2*z2)/2.
-  // Both intermediate Boot inputs now lie within [-1,1].
+  // z1=p1(x)/2; z2=p2(2*z1)/(7/4); z3=p3((7/4)*z2)/2.
+  // Keep both Boot inputs inside [-1,1]. The 7/4 coordinate lowers
+  // cancellation in the final Chebyshev evaluation without changing composition.
   static const std::array<std::vector<double>,3> p{{
     RescaleChebyshev(SignPolynomials()[0],1,2),
-    RescaleChebyshev(SignPolynomials()[1],2,2),
-    RescaleChebyshev(SignPolynomials()[2],2,2)}};
+    RescaleChebyshev(SignPolynomials()[1],2,1.75L),
+    RescaleChebyshev(SignPolynomials()[2],1.75L,2)}};
   return p;
 }
 inline double PolyReLU(double x, double range=10.0) {

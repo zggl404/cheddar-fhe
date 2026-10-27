@@ -17,7 +17,8 @@ using Diagonals = std::map<int, Message>;
 class PackedLinear {
  public:
   PackedLinear(std::shared_ptr<Boot> context, Diagonals diagonals,
-               const std::vector<double>& bias, int input_level, int baby_step);
+               const std::vector<double>& bias, int input_level, int baby_step,
+               std::vector<std::pair<int,int>> input_traces = {});
   void AddRequiredRotations(EvkRequest& req) const;
   void Evaluate(Ct& output, const Ct& input, const EvkMap<Word>& keys) const;
   size_t NumDiagonals() const { return num_diagonals_; }
@@ -25,17 +26,18 @@ class PackedLinear {
   std::shared_ptr<Boot> context_;
   int level_;
   size_t num_diagonals_;
+  std::vector<std::pair<int,int>> input_traces_;
   std::unique_ptr<HoistHandler<Word>> linear_;
   Pt bias_;
 };
 
 std::unique_ptr<PackedLinear> MakeConv(std::shared_ptr<Boot> context,
     const Tensor& input, const Weight& weight, const Weight& bias, int stride,
-    int baby_step = 32, double range = kRange);
+    int baby_step = 0, double range = kRange);
 std::unique_ptr<PackedLinear> MakePool(std::shared_ptr<Boot> context,
-    const Tensor& input, int baby_step = 32);
+    const Tensor& input, int baby_step = 0);
 std::unique_ptr<PackedLinear> MakeClassifier(std::shared_ptr<Boot> context,
-    const Weight& weight, const Weight& bias, int baby_step = 32, double range = kRange);
+    const Weight& weight, const Weight& bias, int baby_step = 0, double range = kRange);
 
 class EvalReLU {
  public:
