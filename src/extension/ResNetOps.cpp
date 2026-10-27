@@ -1,0 +1,127 @@
+#include "extension/ResNetOps.h"
+
+#include "extension/ResNetPolynomial.h"
+
+namespace cheddar::resnet {
+namespace {
+void Edge(Diagonals& diagonals, int dst, int src, double value) {
+  if (!value) return;
+  Require(dst >= 0 && dst < kSlots && src >= 0 && src < kSlots, "matrix edge outside slot range");
+  int rotation = (src - dst + kSlots) % kSlots;
+  auto [it, inserted] = diagonals.try_emplace(rotation);
+  if (inserted) it->second.resize(kSlots);
+  it->second[dst] += value;
+}
+}  // namespace
+
+PackedLinear::PackedLinear(std::shared_ptr<Boot> context, Diagonals diagonals,
+    const std::vector<double>& bias, int level, int baby_step)
+    : context_(std::move(context)), level_(level), num_diagonals_(diagonals.size()) {
+  Require(level > 0 && !diagonals.empty() && int(bias.size()) == kSlots,
+          "invalid affine transform");
+  Require(baby_step > 0 && baby_step <= 128 && !(baby_step & (baby_step-1)),
+          "baby step must be a power of two in [1,128]");
+  PlainHoistMap map;
+  for (auto& [rotation, diagonal] : diagonals) {
+    int bs = rotation % baby_step, gs = rotation - bs;
+    // Undo the final giant rotation on the plaintext diagonal.
+    if (gs) std::rotate(diagonal.begin(), diagonal.end()-gs, diagonal.end());
+    map[gs].emplace(bs, std::move(diagonal));
+  }
+  linear_ = std::make_unique<HoistHandler<Word>>(context_, map, level,
+      context_->param_.GetScale(level), true);
+  Message message(bias.begin(), bias.end());
+  context_->encoder_.Encode(bias_, level-1, context_->param_.GetScale(level-1), message);
+}
+void PackedLinear::AddRequiredRotations(EvkRequest& req) const {
+  linear_->AddRequiredRotations(req);
+}
+void PackedLinear::Evaluate(Ct& output, const Ct& input, const EvkMap<Word>& keys) const {
+  Require(context_->param_.NPToLevel(input.GetNP()) == level_, "linear input level mismatch");
+  context_->AssertSameScale(input.GetScale(), context_->param_.GetScale(level_));
+  Ct result;
+  linear_->Evaluate(context_, result, input, keys);
+  context_->Add(output, result, bias_);
+}
+
+std::unique_ptr<PackedLinear> MakeConv(std::shared_ptr<Boot> context,
+    const Tensor& input, const Weight& weight, const Weight& bias, int stride, int bs, double range) {
+  Require(std::isfinite(range) && range>0,"invalid activation normalization");
+  CheckConv(input, weight, bias, stride);
+  Tensor output(weight.shape[0], input.width/stride, input.pack*stride);
+  Diagonals diagonals;
+  const int kernel = weight.shape[2], pad = kernel/2;
+  // Matrix construction is separate from the CHW CPU convolution reference.
+  for (int co=0; co<output.channels; ++co)
+    for (int y=0; y<output.width; ++y)
+      for (int x=0; x<output.width; ++x) {
+        int dst=output.Slot(co,y,x);
+        for (int ci=0; ci<input.channels; ++ci)
+          for (int ky=0; ky<kernel; ++ky)
+            for (int kx=0; kx<kernel; ++kx) {
+              int iy=stride*y+ky-pad, ix=stride*x+kx-pad;
+              if (iy<0 || iy>=input.width || ix<0 || ix>=input.width) continue;
+              double w=weight.values[((co*input.channels+ci)*kernel+ky)*kernel+kx];
+              Edge(diagonals,dst,input.Slot(ci,iy,ix),w);
+            }
+      }
+  std::vector<double> packed_bias(kSlots);
+  for (int c=0; c<output.channels; ++c)
+    for (int y=0; y<output.width; ++y)
+      for (int x=0; x<output.width; ++x) packed_bias[output.Slot(c,y,x)] = bias.values[c]/range;
+  return std::make_unique<PackedLinear>(context,std::move(diagonals),packed_bias,2,bs);
+}
+
+std::unique_ptr<PackedLinear> MakePool(std::shared_ptr<Boot> context,
+    const Tensor& input, int bs) {
+  Require(input.channels==64 && input.width==8 && input.pack==4, "invalid pooling shape");
+  Diagonals diagonals;
+  for(int c=0;c<64;++c)
+    for(int y=0;y<8;++y)
+      for(int x=0;x<8;++x) Edge(diagonals,c,input.Slot(c,y,x),1.0/64);
+  return std::make_unique<PackedLinear>(context,std::move(diagonals),std::vector<double>(kSlots),2,bs);
+}
+std::unique_ptr<PackedLinear> MakeClassifier(std::shared_ptr<Boot> context,
+    const Weight& weight, const Weight& bias, int bs, double range) {
+  Require(std::isfinite(range) && range>0,"invalid activation normalization");
+  Require(weight.shape==std::vector<uint32_t>({10,64}) && bias.shape==std::vector<uint32_t>{10},
+          "invalid FC shape");
+  Diagonals diagonals;
+  for(int out=0;out<10;++out)
+    for(int in=0;in<64;++in) Edge(diagonals,out,in,weight.values[out*64+in]);
+  std::vector<double> packed_bias(kSlots);
+  for(int c=0;c<10;++c) packed_bias[c]=bias.values[c]/range;
+  return std::make_unique<PackedLinear>(context,std::move(diagonals),packed_bias,1,bs);
+}
+
+EvalReLU::EvalReLU(std::shared_ptr<Boot> context) : context_(std::move(context)) {
+  Require(context_->boot_param_.GetEndLevel()==8, "ReLU schedule requires AE Boot output level 8");
+  const int levels[]{8,4,8}, outputs[]{4,0,3};
+  polynomials_.reserve(3);
+  for(int i=0;i<3;++i) {
+    auto coefficients=StableSignPolynomials()[i];
+    polynomials_.emplace_back(coefficients,levels[i],context_->param_.GetScale(levels[i]),
+                              context_->param_.GetScale(outputs[i]),true);
+    polynomials_.back().Compile(context_);
+  }
+  context_->encoder_.EncodeConstant(half_,3,context_->param_.GetScale(3),0.5);
+}
+void EvalReLU::Evaluate(Ct& output, const Ct& input, const EvkMap<Word>& keys) {
+  Ct original, sign, temporary, aligned;
+  context_->Boot(original,input,keys); ++boot_count_;
+  if(observer) observer("boot_input",original);
+  polynomials_[0].Evaluate(context_,temporary,original,keys.GetMultiplicationKey());
+  if(observer) observer("poly1",temporary);
+  polynomials_[1].Evaluate(context_,sign,temporary,keys.GetMultiplicationKey());
+  if(observer) observer("poly2",sign);
+  context_->Boot(temporary,sign,keys); ++boot_count_;
+  if(observer) observer("boot_sign",temporary);
+  polynomials_[2].Evaluate(context_,sign,temporary,keys.GetMultiplicationKey());
+  if(observer) observer("poly3_half",sign);
+  context_->Add(sign,sign,half_);
+  context_->LevelDown(aligned,original,3);
+  context_->HMult(output,aligned,sign,keys.GetMultiplicationKey(),true);
+  Require(context_->param_.NPToLevel(output.GetNP())==2, "ReLU output level mismatch");
+  context_->AssertSameScale(output.GetScale(),context_->param_.GetScale(2));
+}
+}  // namespace cheddar::resnet

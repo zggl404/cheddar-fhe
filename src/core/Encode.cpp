@@ -103,6 +103,8 @@ template <typename word>
 void Encoder<word>::EncodeCPU(Plaintext<word> &ptxt, int level, double scale,
                            const std::vector<Complex> &message,
                            int num_aux /*= 0*/) const {
+  ++cpu_encode_attempts_;
+  if (gpu_only_encoding_) throw std::runtime_error("CPU encoding is disabled");
   int num_slots = ValidateEncodeInput(message, scale);
   std::vector<Complex> padded_msg(num_slots);
   std::copy(message.begin(), message.end(), padded_msg.begin());
@@ -329,6 +331,8 @@ template <typename word>
 void Encoder<word>::EncodeConstantCPU(Constant<word> &constant, int level,
                                    double scale, double number,
                                    int num_aux /*= 0*/) const {
+  ++cpu_encode_attempts_;
+  if (gpu_only_encoding_) throw std::runtime_error("CPU encoding is disabled");
   BigInt big_int(number * scale);
   NPInfo np = param_.LevelToNP(level, num_aux);
   int num_total_primes = np.GetNumTotal();

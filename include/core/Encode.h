@@ -3,6 +3,7 @@
 #include <cuda_runtime.h>
 
 #include <algorithm>
+#include <atomic>
 #include <complex>
 #include <vector>
 
@@ -51,6 +52,18 @@ class Encoder {
                                 const Plaintext<word> &ptxt) const;
   void SpecialIFFT(std::vector<Complex> &data) const;
   void SpecialFFT(std::vector<Complex> &data) const;
+
+ public:
+  // Optional fail-closed audit for applications requiring GPU-only encoding.
+  struct EncodingStats { uint64_t gpu_vectors, gpu_constants, cpu_attempts; };
+  static void SetGpuOnlyEncoding(bool enabled) { gpu_only_encoding_ = enabled; }
+  static EncodingStats GetEncodingStats() {
+    return {gpu_vector_calls_.load(), gpu_constant_calls_.load(), cpu_encode_attempts_.load()};
+  }
+
+ private:
+  static inline std::atomic<bool> gpu_only_encoding_{false};
+  static inline std::atomic<uint64_t> gpu_vector_calls_{0}, gpu_constant_calls_{0}, cpu_encode_attempts_{0};
 
  public:
   /**

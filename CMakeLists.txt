@@ -20,19 +20,30 @@ find_package(CUDAToolkit 11.8 REQUIRED)
 
 include(FetchContent)
 option(BUILD_TESTS OFF)
-FetchContent_Declare(
-  rmm
-  GIT_REPOSITORY https://github.com/rapidsai/rmm
-  GIT_TAG        branch-22.12
-  GIT_SHALLOW
-)
-FetchContent_MakeAvailable(rmm)
+set(CHEDDAR_RMM_INCLUDE_DIR "" CACHE PATH "Existing RMM 22.12 include directory; avoids dependency downloads")
+if(CHEDDAR_RMM_INCLUDE_DIR)
+  find_package(Threads REQUIRED)
+  find_package(spdlog REQUIRED)
+  add_library(rmm INTERFACE)
+  target_include_directories(rmm INTERFACE "${CHEDDAR_RMM_INCLUDE_DIR}")
+  target_link_libraries(rmm INTERFACE CUDA::cudart spdlog::spdlog_header_only Threads::Threads dl)
+  set(rmm_SOURCE_DIR "${CHEDDAR_RMM_INCLUDE_DIR}")
+else()
+  FetchContent_Declare(
+    rmm
+    GIT_REPOSITORY https://github.com/rapidsai/rmm
+    GIT_TAG        branch-22.12
+    GIT_SHALLOW
+  )
+  FetchContent_MakeAvailable(rmm)
+endif()
 message(STATUS "RMM source dir: ${rmm_SOURCE_DIR}")
 
 # options
 option(ENABLE_EXTENSION "Enable extension sources" ON)
 option(BUILD_UNITTEST "Build unit tests" ON)
 option(USE_GMP "Use GMP instead of libtommath" OFF)
+option(BUILD_RESNET_EXAMPLE "Build compiler-independent CIFAR ResNet runner" OFF)
 if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
 endif()
@@ -73,6 +84,7 @@ if(ENABLE_EXTENSION)
     src/extension/Hoist.cu
     src/extension/LinearTransform.cpp
     src/extension/StripedMatrix.cpp
+    src/extension/ResNetOps.cpp
   )
 endif()
 
@@ -110,6 +122,13 @@ target_compile_options(cheddar PRIVATE
 )
 
 # subdirectories
+if(BUILD_RESNET_EXAMPLE)
+  if(NOT ENABLE_EXTENSION)
+    message(FATAL_ERROR "ResNet requires ENABLE_EXTENSION=ON")
+  endif()
+  add_subdirectory(example)
+endif()
+
 if (BUILD_UNITTEST)
   message(STATUS "Building unit tests")
   add_subdirectory(unittest)

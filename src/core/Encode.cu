@@ -328,6 +328,7 @@ void Encoder<word>::Encode(Plaintext<word> &ptxt, int level, double scale,
   // Preserve host-input lifetime without waiting for the IFFT/RNS/NTT. The
   // overflow-check path already waits past the upload via its status readback.
   if (upload_done) RMM_CUDA_TRY(cudaEventSynchronize(upload_done.get()));
+  ++gpu_vector_calls_;
 }
 
 template <typename word>
@@ -385,6 +386,7 @@ void Encoder<word>::EncodeConstant(Constant<word> &constant, int level,
       param_.GetInvPrimesPtr(np), montgomery_r2_.data(), np.GetNumTotal(), np.GetNumQ(),
       param_.GetMaxNumTer() - np.num_ter_, param_.L_);
   RMM_CUDA_TRY(cudaGetLastError());
+  ++gpu_constant_calls_;
 }
 
 template void Encoder<uint32_t>::Decode(std::vector<Complex> &, const Plaintext<uint32_t> &) const;
