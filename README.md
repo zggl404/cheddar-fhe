@@ -75,16 +75,6 @@ python3 scripts/export_resnet_weights.py \
 
 ONNX 导出器匹配固定的层命名及结构，不支持任意 ResNet ONNX，也不会自动折叠 BatchNorm。其他深度使用对应的 ONNX 文件并设置 `--depth 32`、`44`、`56` 或 `110`，输出为 `models/resnet32.bin` 等。导出同时生成包含归一化参数、张量清单及 SHA-256 的同名 `.json` 文件。C++ 运行程序无需安装 NumPy 或 ONNX。
 
-批量导出五个模型，只需指定 ONNX 目录：
-
-```bash
-python3 scripts/export_all_resnet_weights.py /path/to/onnx
-# 可选：指定输出目录，默认是当前工作目录下的 models
-python3 scripts/export_all_resnet_weights.py /path/to/onnx --output /path/to/models
-```
-
-输入目录应包含 `resnet20_cifar10_train.onnx`、`resnet32_cifar10_train.onnx`、`resnet44_cifar10_train.onnx`、`resnet56_cifar10_train.onnx` 和 `resnet110_cifar10_train.onnx`。脚本先检查五个文件是否齐全，再依次导出，遇到错误即停止；已成功写出的文件会保留，同名输出会覆盖。
-
 ## 4. 运行 ResNet
 
 以下命令均在仓库根目录执行。先用单张图像检查卷积，再运行完整 ResNet20：
