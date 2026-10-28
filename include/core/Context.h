@@ -399,7 +399,21 @@ class Context {
   void HConjAdd(Ct &res, const Ct &a, const Ct &b, const Evk &conj_key) const;
 
   /**
-   * @brief Reduce the level of the input ciphertext to a target level.
+   * @brief Lower a ciphertext to target_level with backend-specific semantics.
+   * For uint64_t, retain a main-Q prefix and set scale to GetScale(target_level).
+   * This relabels the scale without adjusting residues: decoded values gain a
+   * factor input_scale / target_scale. Slots and ciphertext degree are preserved.
+   * Terminal/P bases and targets without a configured scale are unsupported.
+   * In-place and same-level calls also set the target scale.
+   * For uint32_t, delegate to LevelDown, preserving its rescale/scale behavior.
+   * Throws std::invalid_argument for invalid target levels or unsupported
+   * 64-bit bases. Other legacy LevelDown preconditions still apply to uint32_t.
+   */
+  void ModSwitch(Ct &res, const Ct &a, int target_level) const;
+
+  /**
+   * @brief Reduce the level through encoded-one multiplication and rescaling.
+   * Preserves the legacy scale trajectory, including for Boot preparation.
    * This is not an optimized implementation of LevelDown.
    *
    * @param res result ciphertext

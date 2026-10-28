@@ -314,10 +314,11 @@ void HoistHandler<word>::BSFusedKeyMult(
   AssertTrue(num_accum <= (1 << max_log_beta_),
              "num_accum should not be greater than " +
                  std::to_string(1 << max_log_beta_));
-  constexpr_for<1, max_log_beta_ + 1>([&](auto i) {
+  // beta=1 is common at low application/StC levels; it still needs a launch.
+  constexpr_for<0, max_log_beta_ + 1>([&](auto i) {
     constexpr int num_accum_padded = 1 << i;
     if (num_accum > num_accum_padded) return;
-    if (num_accum <= (1 << (i - 1))) return;
+    if (num_accum_padded > 1 && num_accum <= num_accum_padded / 2) return;
     kernel::BSFusedKernel<word, num_accum_padded><<<grid_dim, block_dim>>>(
         dst_b_d_ptrs.data(), dst_a_d_ptrs.data(), modup_d_ptrs.data(),
         key_b_d_ptrs.data(), key_a_d_ptrs.data(), num_accum, num_rotations,
@@ -426,10 +427,10 @@ void HoistHandler<word>::GSFusedPAccum(ConstContextPtr<word> context,
   dim3 block_dim(kernel_block_dim_);
   dim3 grid_dim(num_primes * context->param_.degree_ / kernel_block_dim_);
 
-  constexpr_for<1, max_log_bs_ + 1>([&](auto i) {
+  constexpr_for<0, max_log_bs_ + 1>([&](auto i) {
     constexpr int num_bs_padded = 1 << i;
     if (num_bs > num_bs_padded) return;
-    if (num_bs <= (1 << (i - 1))) return;
+    if (num_bs_padded > 1 && num_bs <= num_bs_padded / 2) return;
     kernel::GSFusedKernel<word, num_bs_padded><<<grid_dim, block_dim>>>(
         dst_b_d_ptrs.data(), dst_a_d_ptrs.data(), bx_d_ptrs.data(),
         ax_d_ptrs.data(), mx_d_ptrs.data(), num_bs, num_gs, primes, inv_primes);

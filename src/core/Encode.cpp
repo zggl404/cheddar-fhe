@@ -1,5 +1,10 @@
 #include "core/Encode.h"
 
+#include <rmm/detail/error.hpp>
+
+#include <cmath>
+#include <stdexcept>
+
 #include "common/Assert.h"
 #include "common/CommonUtils.h"
 #include "common/PrimeUtils.h"
@@ -13,19 +18,94 @@ Encoder<word>::Encoder(const Parameter<word> &param,
     : param_{param},
       ntt_handler_{ntt_handler},
       M_{param.degree_ * 2},
-      twiddle_factors_(param.degree_ * 2) {
+      twiddle_factors_(param.degree_ * 2),
+      gpu_twiddle_factors_(param.degree_ * 2, cudaStreamLegacy),
+      gpu_galois_factors_(param.degree_ / 2) {
   for (int i = 0; i < param.degree_ * 2; i++) {
     // e^(2*pi*sqrt(-1)*i/M)
     twiddle_factors_[i] = std::polar(1.0, 2.0 * M_PI * i / M_);
   }
+  static_assert(sizeof(Complex) == sizeof(double2));
+  RMM_CUDA_TRY(cudaMemcpy(gpu_twiddle_factors_.data(), twiddle_factors_.data(),
+                          twiddle_factors_.size() * sizeof(Complex),
+                          cudaMemcpyHostToDevice));
+  HostVector<uint32_t> factors(param.degree_ / 2);
+  for (int i = 0; i < param.degree_ / 2; ++i)
+    factors[i] = param.GetGaloisFactor(i);
+  CopyHostToDevice(gpu_galois_factors_, factors);
+  PrepareDecodeTables();
 }
 
 template <typename word>
-void Encoder<word>::Encode(Plaintext<word> &ptxt, int level, double scale,
+void Encoder<word>::PrepareDecodeTables() {
+  const auto all = param_.GetPrimeVector(param_.LevelToNP(param_.max_level_, param_.alpha_));
+  const int count = param_.L_;
+  HostVector<word> r2(all.size()), inverses(count * count, 0);
+  for (size_t i = 0; i < all.size(); ++i)
+    r2[i] = primeutil::ToMontgomery(primeutil::ToMontgomery<word>(1, all[i]), all[i]);
+  for (int i = 0; i < count; ++i)
+    for (int j = 0; j < i; ++j)
+      inverses[i * count + j] = primeutil::ToMontgomery(
+          primeutil::InvMod(all[j], all[i]), all[i]);
+  CopyHostToDevice(montgomery_r2_, r2);
+  CopyHostToDevice(decode_inverses_, inverses);
+  for (int level = -1; level <= param_.max_level_; ++level)
+    decode_moduli_.push_back(MakeDecodeModulus(param_.LevelToNP(level)));
+  // Consume all temporary host tables before the constructor returns.
+  RMM_CUDA_TRY(cudaStreamSynchronize(cudaStreamLegacy));
+}
+
+template <typename word>
+DeviceVector<uint64_t> Encoder<word>::MakeDecodeModulus(const NPInfo &np) const {
+  std::vector<uint64_t> product{1};
+  for (word prime : param_.GetPrimeVector(np)) {
+    uint64_t carry = 0;
+    for (auto &limb : product) {
+      uint128_t value = uint128_t(limb) * prime + carry;
+      limb = uint64_t(value);
+      carry = uint64_t(value >> 64);
+    }
+    if (carry) product.push_back(carry);
+  }
+  const size_t limbs = product.size();
+  HostVector<uint64_t> bounds(2 * limbs);
+  for (size_t i = 0; i < limbs; ++i) {
+    bounds[i] = product[i];
+    bounds[limbs + i] = (product[i] >> 1) |
+        (i + 1 < limbs ? product[i + 1] << 63 : uint64_t(0));
+  }
+  DeviceVector<uint64_t> device_bounds(bounds.size());
+  RMM_CUDA_TRY(cudaMemcpy(device_bounds.data(), bounds.data(), bounds.size() * sizeof(uint64_t),
+                          cudaMemcpyHostToDevice));
+  return device_bounds;
+}
+
+template <typename word>
+int Encoder<word>::ValidateEncodeInput(const std::vector<Complex> &message,
+                                       double scale,
+                                       double *max_component) const {
+  if (message.empty() || message.size() > size_t(param_.degree_ / 2))
+    throw std::invalid_argument("Encode: message size must be in [1, N/2]");
+  if (!std::isfinite(scale) || scale <= 0)
+    throw std::invalid_argument("Encode: scale must be finite and positive");
+  double magnitude = 0;
+  for (const auto &value : message) {
+    if (!std::isfinite(value.real()) || !std::isfinite(value.imag()))
+      throw std::invalid_argument("Encode: message must be finite");
+    magnitude = std::max(magnitude,
+                         std::max(std::abs(value.real()), std::abs(value.imag())));
+  }
+  if (max_component) *max_component = magnitude;
+  return 1 << Log2Ceil<int>(static_cast<int>(message.size()));
+}
+
+template <typename word>
+void Encoder<word>::EncodeCPU(Plaintext<word> &ptxt, int level, double scale,
                            const std::vector<Complex> &message,
                            int num_aux /*= 0*/) const {
-  int msg_length = message.size();
-  int num_slots = 1 << Log2Ceil<int>(msg_length);
+  ++cpu_encode_attempts_;
+  if (gpu_only_encoding_) throw std::runtime_error("CPU encoding is disabled");
+  int num_slots = ValidateEncodeInput(message, scale);
   std::vector<Complex> padded_msg(num_slots);
   std::copy(message.begin(), message.end(), padded_msg.begin());
   EncodeWorker(ptxt, level, scale, padded_msg, num_aux);
@@ -43,7 +123,7 @@ void Encoder<word>::EncodeWorker(Plaintext<word> &ptxt, int level, double scale,
 }
 
 template <typename word>
-void Encoder<word>::Decode(std::vector<Complex> &message,
+void Encoder<word>::DecodeCPU(std::vector<Complex> &message,
                            const Plaintext<word> &ptxt) const {
   // Message padding
   Plaintext<word> tmp;
@@ -248,9 +328,11 @@ void Encoder<word>::PlaintextToComplexVector(
 }
 
 template <typename word>
-void Encoder<word>::EncodeConstant(Constant<word> &constant, int level,
+void Encoder<word>::EncodeConstantCPU(Constant<word> &constant, int level,
                                    double scale, double number,
                                    int num_aux /*= 0*/) const {
+  ++cpu_encode_attempts_;
+  if (gpu_only_encoding_) throw std::runtime_error("CPU encoding is disabled");
   BigInt big_int(number * scale);
   NPInfo np = param_.LevelToNP(level, num_aux);
   int num_total_primes = np.GetNumTotal();

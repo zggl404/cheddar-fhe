@@ -1,5 +1,8 @@
 #include "core/Context.h"
 
+#include <type_traits>
+#include <stdexcept>
+
 #include "common/Assert.h"
 #include "common/CommonUtils.h"
 #include "common/PrimeUtils.h"
@@ -910,6 +913,48 @@ void Context<word>::MadUnsafe(Ct &res, const Ct &a, const Const &b) const {
                          {b_view});
     // elem_handler_.MadConstTwo(res.bx_, res.ax_, a.bx_, a.ax_, b.cx_,
     //                           num_q_primes);
+  }
+}
+
+template <typename word>
+void Context<word>::ModSwitch(Ct &res, const Ct &a, int target_level) const {
+  if (target_level < 0)
+    throw std::invalid_argument("ModSwitch: negative target level");
+  const NPInfo source_np = a.GetNP();
+  if constexpr (std::is_same_v<word, uint64_t>) {
+    if (source_np.num_ter_ != 0 || source_np.num_aux_ != 0)
+      throw std::invalid_argument("ModSwitch64 requires a main-Q-only input");
+  }
+  const int source_level = param_.NPToLevel(source_np);
+  if (target_level > source_level)
+    throw std::invalid_argument("ModSwitch: cannot raise level");
+  if constexpr (std::is_same_v<word, uint32_t>) {
+    LevelDown(res, a, target_level);
+  } else {
+    const NPInfo target_np = param_.LevelToNP(target_level);
+    if (target_np.num_ter_ != 0 || target_np.num_aux_ != 0 ||
+        target_np.num_main_ > source_np.num_main_)
+      throw std::invalid_argument("ModSwitch64 requires a main-Q prefix target");
+    if (target_level > param_.default_encryption_level_)
+      throw std::invalid_argument("ModSwitch64: target has no configured scale");
+    const double target_scale = param_.GetScale(target_level);
+    if (&res == &a) {
+      res.ModifyNP(target_np);
+      res.SetScale(target_scale);
+      return;
+    }
+    res.RemoveRx();
+    res.ModifyNP(target_np);
+    if (a.HasRx()) res.PrepareRx();
+    res.SetScale(target_scale);
+    res.SetNumSlots(a.GetNumSlots());
+    const auto source = a.ConstViewVector();
+    auto target = res.ViewVector();
+    for (size_t i = 0; i < target.size(); ++i) {
+      cudaMemcpyAsync(target[i].data(), source[i].data(),
+                      target[i].TotalSize() * sizeof(word),
+                      cudaMemcpyDeviceToDevice, res.bx_.stream());
+    }
   }
 }
 

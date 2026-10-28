@@ -79,7 +79,7 @@ struct BootParameter {
 
   /**
    * @brief Get the ending level for bootstrapping. Should be the same as
-   * default_encryption_level_.
+   * default_encryption_level_ minus num_stc_levels_.
    *
    * @return int the ending level for bootstrapping
    */
