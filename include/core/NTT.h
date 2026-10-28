@@ -42,9 +42,8 @@ class NTTHandler {
   int GetBlockDim(NTTType type, Phase phase) const;
 
  public:
-  // TODO: allow for different log_degree
   static constexpr int min_log_degree_ = 12;
-  static constexpr int max_log_degree_ = 16;
+  static constexpr int max_log_degree_ = 17;
 
   explicit NTTHandler(const Parameter<word> &param);
 

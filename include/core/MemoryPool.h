@@ -1,7 +1,10 @@
 #pragma once
 
+#include <memory>
+#include <vector>
 #include <rmm/mr/device/binning_memory_resource.hpp>
 #include <rmm/mr/device/cuda_async_memory_resource.hpp>
+#include <rmm/mr/device/fixed_size_memory_resource.hpp>
 #include <rmm/mr/device/per_device_resource.hpp>
 
 #include "core/Parameter.h"
@@ -21,6 +24,7 @@ class MemoryPool {
 
  private:
   DefaultUpstream base_;
+  std::vector<std::unique_ptr<rmm::mr::fixed_size_memory_resource<DefaultUpstream>>> bins_;
   MemoryPoolBase memory_pool_;
 };
 

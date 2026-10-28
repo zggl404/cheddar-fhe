@@ -17,14 +17,18 @@ void Edge(Diagonals& diagonals, int dst, int src, double value) {
 PackedLinear::PackedLinear(std::shared_ptr<Boot> context, Diagonals diagonals,
     const std::vector<double>& bias, int level, int baby_step,
     std::vector<std::pair<int,int>> input_traces)
-    : context_(std::move(context)), level_(level), num_diagonals_(diagonals.size()),
+    : context_(std::move(context)), level_(level), slots_(bias.size()), num_diagonals_(diagonals.size()),
       input_traces_(std::move(input_traces)) {
-  Require(level > 0 && !diagonals.empty() && int(bias.size())==kSlots,
-          "invalid affine transform");
+  Require(level > 0 && !diagonals.empty() && slots_>0 &&
+          slots_<=context_->param_.degree_/2 && !(slots_&(slots_-1)),
+          "invalid affine transform: level="+std::to_string(level)+" slots="+std::to_string(slots_)+
+          " degree="+std::to_string(context_->param_.degree_)+" diagonals="+std::to_string(diagonals.size()));
   Require(baby_step > 0 && baby_step <= 128 && !(baby_step & (baby_step-1)),
           "baby step must be a power of two in [1,128]");
   PlainHoistMap map;
   for (auto& [rotation, diagonal] : diagonals) {
+    Require(rotation>=0 && rotation<slots_ && int(diagonal.size())==slots_,
+            "invalid affine diagonal");
     int bs = rotation % baby_step, gs = rotation - bs;
     // Undo the final giant rotation on the plaintext diagonal.
     if (gs) std::rotate(diagonal.begin(), diagonal.end()-gs, diagonal.end());
@@ -42,7 +46,7 @@ void PackedLinear::AddRequiredRotations(EvkRequest& req) const {
 }
 void PackedLinear::Evaluate(Ct& output, const Ct& input, const EvkMap<Word>& keys) const {
   Require(context_->param_.NPToLevel(input.GetNP()) == level_, "linear input level mismatch");
-  Require(input.GetNumSlots()==kSlots, "ResNet linear input must have 16384 slots");
+  Require(input.GetNumSlots()==slots_, "linear input slot count mismatch");
   context_->AssertSameScale(input.GetScale(), context_->param_.GetScale(level_));
   Ct result,traced;
   const Ct* operand=&input;

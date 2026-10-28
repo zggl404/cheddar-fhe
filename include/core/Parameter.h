@@ -29,7 +29,7 @@ class Parameter {
   /**
    * @brief Construct a new Parameter object for holding CKKS parameters.
    *
-   * @param log_degree log2(polynomial degree), currently only 16 is supported
+   * @param log_degree log2(polynomial degree), supports 16 and 17
    * @param base_scale scale at level 0
    * @param default_encryption_level default encryption level (StC start level
    * when bootstrapping is enabled)

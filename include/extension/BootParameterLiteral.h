@@ -127,7 +127,8 @@ struct ResolvedBootConfig {
 template <typename Word>
 ResolvedBootConfig<Word> ResolveBootConfig(const BootConfig& config) {
   using parameter_detail::Require;
-  Require(config.ring_dimension == 65536, "BootConfig currently requires N=65536");
+  Require(config.ring_dimension == 65536 || config.ring_dimension == 131072,
+          "BootConfig requires N=65536 or N=131072");
   Require(config.slot_count > 0 && config.slot_count <= config.ring_dimension / 2 &&
               (config.slot_count & (config.slot_count - 1)) == 0,
           "slot_count must be a power of two in [1,N/2]");
@@ -190,6 +191,7 @@ ResolvedBootConfig<Word> ResolveBootConfig(const BootConfig& config) {
   const int internal_levels = config.num_cts_levels + budget.GetNumEvalModLevels();
   Require(lower_levels + internal_levels < 1024, "Boot level budget too large");
   ParametersLiteral<Word> spec;
+  spec.log_degree = config.ring_dimension == 131072 ? 17 : 16;
   spec.log_default_scale = config.normal_scale_bits;
   spec.log_base_modulus = first_bits;
   spec.default_encryption_level = lower_levels;

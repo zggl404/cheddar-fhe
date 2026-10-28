@@ -341,6 +341,23 @@ void TestCapacityFallback() {
 }
 
 int main() {
+  for (int log_degree : {16,17}) {
+    BootConfig config;
+    config.ring_dimension=1<<log_degree;
+    config.slot_count=config.ring_dimension/2;
+    config.multiplicative_depth=8;
+    config.normal_scale_bits=40;
+    config.boot_scale_bits=58;
+    config.first_modulus_bits=50;
+    config.auxiliary_modulus_bits=341;
+    config.num_stc_levels=4;
+    const auto result=ResolveBootConfig<uint32_t>(config);
+    Check(result.parameters.log_degree==log_degree);
+    Check(result.slot_count==(1<<(log_degree-1))&&result.boot.GetEndLevel()==8);
+    for(auto p:result.parameters.main_primes)Check(p%((1ULL<<log_degree)*2)==1);
+    for(auto p:result.parameters.terminal_primes)Check(p%((1ULL<<log_degree)*2)==1);
+    for(auto p:result.parameters.auxiliary_primes)Check(p%((1ULL<<log_degree)*2)==1);
+  }
   Check(!parameter_detail::IsPrime(0));
   Check(!parameter_detail::IsPrime(1));
   Check(parameter_detail::IsPrime(2));

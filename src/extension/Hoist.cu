@@ -897,12 +897,11 @@ void HoistHandler<word>::EvaluateGiantStepOptimized(
 
   // 3-2. regular BSGS accumulation sequence
   std::map<int, Ct> accum;
-  bool gs_idx_0_exists = false;
+  const bool gs_idx_0_exists = hoist_pt_map_.find(0) != hoist_pt_map_.end();
   Ct *final_accum;
   accum.try_emplace(0, ref_ct_np);
   final_accum = &accum[0];
 
-  if (hoist_pt_map_.begin() != hoist_pt_map_.end()) gs_idx_0_exists = true;
   for (const auto &[gs_idx, pt_map] : hoist_pt_map_) {
     accum.try_emplace(gs_idx, ref_ct_np);
   }

@@ -25,6 +25,7 @@ class PackedLinear {
  private:
   std::shared_ptr<Boot> context_;
   int level_;
+  int slots_;
   size_t num_diagonals_;
   std::vector<std::pair<int,int>> input_traces_;
   std::unique_ptr<HoistHandler<Word>> linear_;

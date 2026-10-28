@@ -3,6 +3,9 @@
 Cheddar is a swift C++/CUDA library for the GPU execution of fully homomorphic encryption (FHE).
 Cheddar targets the CKKS (Cheon-Kim-Kim-Song) FHE scheme.
 
+Handwritten CIFAR-10 inference examples: [ResNet](example/README.resnet.md) and
+[N=2^17 CNNs: VGG11/16, MobileNet, SqueezeNet, AlexNet](example/README.cnn.md).
+
 ## Key Features
 Cheddar focuses on maximizing GPU utilization and arithmetic efficiency:
 * **High Arithmetic Efficiency**: Supports 32-bit execution with enhanced rational rescaling (based on [1, 2]).

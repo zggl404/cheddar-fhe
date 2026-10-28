@@ -205,8 +205,8 @@ template <typename Word>
 ParametersLiteral<Word> ResolveParametersLiteral(ParametersLiteral<Word> spec) {
   using parameter_detail::Require;
   constexpr int max_bits = sizeof(Word) * 8 - 1;
-  // The public Parameter contract currently guarantees log_degree=16 only.
-  Require(spec.log_degree == 16, "only log_degree=16 is supported by this API");
+  Require(spec.log_degree == 16 || spec.log_degree == 17,
+          "only log_degree=16 or 17 is supported by this API");
   Require(spec.log_default_scale >= 0 && spec.log_default_scale <= 1023,
           "log_default_scale must be in [0,1023]");
   Require(spec.num_levels >= -1 && spec.log_base_modulus >= -1,

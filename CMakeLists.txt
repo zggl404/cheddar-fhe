@@ -44,6 +44,7 @@ option(ENABLE_EXTENSION "Enable extension sources" ON)
 option(BUILD_UNITTEST "Build unit tests" ON)
 option(USE_GMP "Use GMP instead of libtommath" OFF)
 option(BUILD_RESNET_EXAMPLE "Build compiler-independent CIFAR ResNet runner" OFF)
+option(BUILD_CNN_EXAMPLE "Build handwritten CNN runner and GPU primitive checks" OFF)
 if(NOT CMAKE_BUILD_TYPE)
   set(CMAKE_BUILD_TYPE Release CACHE STRING "Build type" FORCE)
 endif()
@@ -85,6 +86,7 @@ if(ENABLE_EXTENSION)
     src/extension/LinearTransform.cpp
     src/extension/StripedMatrix.cpp
     src/extension/ResNetOps.cpp
+    src/extension/CnnOps.cpp
   )
 endif()
 
@@ -122,7 +124,7 @@ target_compile_options(cheddar PRIVATE
 )
 
 # subdirectories
-if(BUILD_RESNET_EXAMPLE)
+if(BUILD_RESNET_EXAMPLE OR BUILD_CNN_EXAMPLE)
   if(NOT ENABLE_EXTENSION)
     message(FATAL_ERROR "ResNet requires ENABLE_EXTENSION=ON")
   endif()
