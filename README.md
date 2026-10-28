@@ -1,407 +1,165 @@
-# Cheddar: A Swift Fully Homomorphic Encryption (FHE) GPU Library 1.0
+# Cheddar ResNet 编译与运行
 
-Cheddar is a swift C++/CUDA library for the GPU execution of fully homomorphic encryption (FHE).
-Cheddar targets the CKKS (Cheon-Kim-Kim-Song) FHE scheme.
+本分支通过 Cheddar C++/CUDA API 在 NVIDIA GPU 上执行 CIFAR-10 ResNet 的 CKKS 密文推理，支持 ResNet20、32、44、56 和 110，无需 FHE 编译器。
 
-## Key Features
-Cheddar focuses on maximizing GPU utilization and arithmetic efficiency:
-* **High Arithmetic Efficiency**: Supports 32-bit execution with enhanced rational rescaling (based on [1, 2]).
-* **Optimized Kernels**: Features highly tuned polynomial operation kernels, including NTT and INTT, designed for GPU architectures.
-* **Instruction Optimization**: Implements operational sequence optimizations to minimize memory bottlenecks.
-* **Developer Friendly**: Provides a high-level programming interface for easier integration.
-* **Open Access**: Fully open-source under the MIT License.
+## 1. 环境准备
 
-## Security
+在配有 NVIDIA GPU 的 Linux 机器上编译运行，需要：
 
-Suppose a client-server scenario where the client (Alice) wants to offload useful computations on her private data to the server (Bob) but without exposing her private data to anyone including Bob.
-Alice can encrypt her data into FHE ciphertexts and send the ciphertexts to Bob.
-Bob will perform FHE operations directly on the ciphertexts without decryption and return the resulting FHE ciphertexts back to Alice.
-The use of FHE guarantees the IND-CPA security, working with honest-but-curious (i.e., semi-honest) participants (Alice and Bob).
-Note that, because Bob only has access to encrypted data from Alice, how Bob performs the computations does not affect the security of the model.
+- 可用的 NVIDIA 驱动和 CUDA Toolkit 11.8 或更新版本；CUDA 版本必须支持实际 GPU 的架构。
+- CMake 3.24 或更新版本、支持 C++17 的 C++ 编译器、Git 和 GMP。
+- Python 3：仅导出权重和运行验证脚本时需要；导出依赖 NumPy，ONNX 输入另需 ONNX。
+- 足够的 GPU 显存；显存占用取决于模型和参数，本指南不保证特定显存容量能运行所有模型。
 
-Cheddar only focuses on accelerating server-side (Bob's) FHE operations and does **NOT** provide any security guarantees for the client-side (Alice's) operations (e.g., encryption and decryption).
-Especially, the client-side functionalities provided in [include/UserInterface.h](./include/UserInterface.h) or  [include/Random.h](./include/Random.h) should only be used for test purposes.
-Also, the security of an FHE scheme relies on an approriate choice of parameters.
-Consult security experts if you are unsure of the parameter choice.
-
-This project is provided "as is" without any warranty of any kind, expressed or implied.
-The authors shall not be held liable for any damages or issues arising from the use of this code, including but not limited to security vulnerabilities, data loss, or system failures.
-Use at your own risk.
-
-## How to Start
-
-### Requirements
-> [!IMPORTANT]
->  * NVIDIA server/consumer GPU (Pascal or later) with at least 16GB of DRAM
->  * CUDA 11.8 or later
->  * CMake version 3.24 or greater.
-
-### Install Dependencies (Ubuntu)
-
-You can install required dependencies via `apt`:
+Ubuntu 系统依赖：
 
 ```bash
 sudo apt update
-sudo apt install -y build-essential libgmp-dev
+sudo apt install -y build-essential git libgmp-dev python3 python3-venv
+nvcc --version
+cmake --version
+nvidia-smi
 ```
 
-> [!NOTE]
-> * `libgmp-dev` is required when `USE_GMP=ON`.
-> * Ubuntu's default cmake package may be older than 3.24. Install a newer version manually if needed.
+CUDA Toolkit 和 CMake 如未满足版本要求，需先自行安装。
 
-### Cheddar Compilation
+## 2. 获取代码并编译
 
-Configure and build Cheddar:
 ```bash
-cmake -S $PATH_TO_ROOT_DIR -B $PATH_TO_BUILD_DIR
-cmake --build $PATH_TO_BUILD_DIR -j
-```
-You can customize the build by passing options with -D:
-```bash
-cmake -S $PATH_TO_ROOT_DIR -B $PATH_TO_BUILD_DIR \
+git clone --branch cheddar_resnet https://github.com/zggl404/cheddar-fhe.git
+cd cheddar-fhe
+
+cmake -S . -B build \
   -DCMAKE_BUILD_TYPE=Release \
   -DUSE_GMP=ON \
-  -DBUILD_UNITTEST=ON \
-  -DENABLE_EXTENSION=ON
+  -DENABLE_EXTENSION=ON \
+  -DBUILD_UNITTEST=OFF \
+  -DBUILD_RESNET_EXAMPLE=ON \
+  -DCMAKE_CUDA_ARCHITECTURES=native
+cmake --build build --target resnet_cifar --parallel 8
 ```
 
-Explanation of each option. The default value for each option is denoted in **bold** under the **Values** column:
-| CMake Option       | Values                             | Description                                                 |
-| ------------------ | ---------------------------------- | ----------------------------------------------------------- |
-| `CMAKE_BUILD_TYPE` | **Release**, Debug, RelWithDebInfo | Select the compilation build type.                          |
-| `USE_GMP`          | ON / **OFF**                       | Use GMP for high-precision arithmetic instead of libtommath |
-| `BUILD_UNITTEST`   | **ON** / OFF                       | Build unit tests                                            |
-| `ENABLE_EXTENSION` | **ON** / OFF                       | Enable extension sources                                    |
+可执行文件为 `build/example/resnet_cifar`。`native` 用于在目标 GPU 机器上编译；交叉编译或自动探测失败时，将其替换为目标 GPU 的 CUDA 架构编号，并使用支持该架构的 CUDA Toolkit。
 
-
-
-## Contact
-
-Please use GitHub issues for any suggestions.
-For other inquiries, you can take a look at our [ASPLOS 2026 paper](https://doi.org/10.1145/3760250.3762223) (or [arXiv version](https://arxiv.org/abs/2407.13055)) or contact the authors by e-mail:
-* Jongmin Kim (firstname.lastname@snu.ac.kr)
-* Wonseok Choi (firstname.lastname@snu.ac.kr)
-
-## Programmatic parameter initialization
-
-Include `core/ParameterLiteral.h` to configure CKKS directly in C++17:
-
-```cpp
-#include "core/ParameterLiteral.h"
-#include "core/Context.h"
-
-cheddar::ParametersLiteral<uint64_t> spec;
-spec.log_degree = 16;
-spec.log_default_scale = 40;
-spec.default_encryption_level = 2;
-spec.log_main_primes = {50, 40, 40};
-spec.log_auxiliary_primes = {56};
-// level_config is omitted: generated automatically for levels 0..2.
-
-auto resolved = cheddar::ResolveParametersLiteral(spec); // CPU only
-// resolved.main_primes / auxiliary_primes contain reproducible concrete primes.
-auto param = cheddar::NewParametersFromLiteral(resolved); // Allocates GPU tables.
-auto context = cheddar::Context<uint64_t>::Create(*param);
-// Keep param alive until all contexts, clients and ciphertexts are destroyed.
-```
-
-Use `uint32_t` for the 32-bit backend. Each prime family accepts either explicit
-`main_primes`, `terminal_primes`, `auxiliary_primes`, or the corresponding
-`log_main_primes`, `log_terminal_primes`, `log_auxiliary_primes`. Families can use
-different modes, but setting both modes for the same family is an error. A log
-size `b` deterministically selects a distinct NTT prime near `2^b`, searching both
-sides in order of distance (ties prefer below). Search is bounded by
-`[2^(b-1), min(2^(b+1), 2^(word_bits-1)))`; at the word limit only the lower side
-is available. All explicit primes are reserved first. Generated log sizes
-are 18..31 for uint32_t and 18..63 for uint64_t. The checked API currently accepts
-`log_degree=16` only; it does not extend the backend's degree support.
-
-Omit `level_config` to plan it automatically from the actual primes. For basic
-CKKS, the maximum level defaults to `default_encryption_level`; `num_levels`
-can override it. The planner searches legal prefix-count pairs for every level,
-including rational rescaling with terminal/main prime exchanges in 32-bit mode.
-It minimizes squared error of actual rescale log sizes against the requested
-sizes, prioritizing application/StC levels over approximate internal Boot targets,
-with a small cumulative-modulus tie preference. The final level uses all
-main/terminal primes. There is no preset table of count pairs.
-
-Optional planning inputs:
-
-- `log_base_modulus`: target log2(Q0), defaults to `log_default_scale + 10`.
-- `log_rescale_primes`: target log2(Q[l]/Q[l-1]) per transition; basic CKKS defaults
-  to `log_default_scale` at every transition.
-- `num_levels`: number of transitions, inferred from the target vector if given.
-
-Explicit `level_config[l] = {main_count, terminal_count}` remains supported.
-It cannot be combined with rescale targets. The planner selects from the supplied
-prime pool; it does not invent extra primes, choose a security level, or guarantee
-accuracy for arbitrary pools. Targets are best-fit objectives rather than exact
-rescale sizes. Inspect `resolved.level_config` and verify precision for the workload.
-
-For bootstrapping, also include `extension/BootParameterLiteral.h`:
-
-```cpp
-// spec must describe the full Boot chain, not the short basic example above.
-cheddar::BootParametersLiteral boot_spec; // CtS=4, StC=3, message ratio log=5
-// Optional: independent of spec.log_default_scale for normal computation.
-// boot_spec.boot_scale_bits = 56; // Use a matching internal Boot prime pool.
-auto resolved_boot = cheddar::ResolveBootParametersLiteral(spec, boot_spec);
-auto boot_param = cheddar::NewBootParametersFromLiteral(resolved_boot, boot_spec);
-auto param = cheddar::NewParametersFromLiteral(resolved_boot);
-// Then pass *param and boot_param to BootContext<Word>::Create.
-```
-
-`ResolveBootParametersLiteral` automatically reserves CtS + EvalMod levels above
-the default encryption level. It uses the default scale as the lower-level rescale
-target and 58/55 bits for the 32/64-bit internal Boot targets; `log_rescale_primes`
-can override those targets. `boot_spec.boot_scale_bits` explicitly overrides the
-internal target (16..62 for the current degree); -1 preserves the backend default.
-It controls the CtS/EvalMod rescale targets and the EvalMod entry scale, not a
-single fixed scale for every intermediate ciphertext. StC converts the result
-back to the normal output scale. The level-0 scale and message ratio are unchanged.
-When supplying your own primes, allocate a matching Boot prime region; this option
-does not replace that prime pool. Explicit rescale targets and actual EvalMod entry
-scale are checked for conflicts with the requested Boot scale.
-
-`BootConfig` describes the same logical requirements for either backend. Choose
-`Word` once when resolving parameters and creating the context:
-
-```cpp
-#include "extension/BootParameterLiteral.h"
-#include "extension/BootContext.h"
-
-using Word = uint32_t; // Or uint64_t; the logical configuration is unchanged.
-cheddar::BootConfig config;
-config.ring_dimension = 65536;
-config.multiplicative_depth = 14; // Usable multiplication levels after Boot.
-config.slot_count = 32768;
-config.normal_scale_bits = 50;
-config.boot_scale_bits = 56;
-// Optional: nominal P bit budget; default 300. Do not reuse a physical P count
-// across word widths. CtS/StC default to 4/3.
-// config.auxiliary_modulus_bits = 300;
-
-auto resolved = cheddar::ResolveBootConfig<Word>(config); // CPU only.
-auto param = cheddar::NewParametersFromLiteral(resolved.parameters);
-auto context = cheddar::BootContext<Word>::Create(*param, resolved.boot);
-// Keep param alive while context is used. Encode resolved.slot_count values.
-```
-
-For this example both backends have max level 29 and Boot output level 14.
-The 64-bit backend generates Q targets `[55, 50 x 17, 56 x 12]` and five
-approximately 60-bit P primes. The 32-bit backend splits those logical Q targets
-into balanced factors with targets no larger than 30 bits and selects ten approximately
-31-bit P primes. Each logical level can contain multiple physical primes.
-
-The resolver first tries the existing direct split and returns it unchanged when
-it resolves successfully. Only an insufficient prime pool or infeasible chain
-triggers alternatives. For 32-bit scale50 it next tries the GPU-validated mixed
-structure: normal transitions alternate 26+24 and 25+25; short-base and Boot
-transitions retain their requested targets (for example 30+30 and 28+27).
-Each mixed transition keeps its explicit physical-prime boundary, and the actual
-scale at every usable normal level must be within 1 bit of its target.
-
-If direct and mixed pools cannot be resolved, the 32-bit backend searches a
-bounded family of main/terminal pools using the rational-rescale level planner,
-then appends the Boot region. It checks the short-base constraints and selects
-the pool with the smallest normal rescale-target error, with a small first-modulus
-tie preference. The same actual normal-scale constraint applies; StC internal
-scales may vary. The caller's P budget or explicit P overrides are retained in
-every candidate. This is deterministic planning, not a precision proof.
-Unsupported targets or infeasible pools raise `std::invalid_argument`.
-
-For the scale50/Boot55/first60/message-ratio10 profile, depth16 with P target660
-retains its original direct chain (64 main, 0 terminal, 22 P); depth18 with P
-target720 uses the mixed chain (68 main, 0 terminal, 24 P). Both have dnum=3.
-The P target is nominal: `ceil(720/31)` selects 24 primes; the earlier custom
-23-prime pool was derived from Q count/dnum and is not the same P budget policy.
-
-The current high-level 32-bit policy restricts normal scale targets to at most
-55 bits and short-base targets to at most 60 bits. A normal=56/Boot=56 experiment
-failed precision validation, so these settings are rejected before GPU setup;
-the exact arithmetic limitation is still unresolved. Some lower-scale/low-depth
-rational pools also have no feasible fit and are rejected. The lower-level
-literal API and existing 32-bit operators retain their previous behavior.
-
-Physical overrides `auxiliary_prime_count` and `auxiliary_prime_bits` remain
-available (`-1` selects automatic values). `auxiliary_modulus_bits` is a nominal
-target, not a lower bound on the actual product or a security guarantee. The
-existing `BootConfig64` plus non-template `ResolveBootConfig(config)` remains
-available with its original five 60-bit P defaults. `BootConfig32` aliases the
-new logical config; use `ResolveBootConfig<uint32_t>(config)` to resolve it.
-
-Prime bit sizes and scale bits are targets. Inspect `resolved.parameters` for
-the actual primes and `level_config`, and use `param->GetScale(level)` for the
-actual scale, which can differ more in the 32-bit backend. Omitting
-`boot_scale_bits` preserves backend defaults: 58 (32-bit), 55 (64-bit). Set it
-explicitly when comparing the same logical configuration. The checked API
-currently requires N=65536 and a power-of-two slot count in [1,N/2].
-
-Run `boot_config_test 32 50 56 32768 14 1` and the corresponding `64` command to
-check Boot and all 14 following ciphertext multiplication levels. Arguments are
-word bits, normal scale bits, Boot scale bits, slots, depth and MinKS flag.
-Optional trailing arguments set first-modulus bits, message-ratio log, nominal
-P budget, dense secret weight and expected dnum. For the capacity regression:
-
-```sh
-boot_config_test 32 50 55 32768 18 0 60 10 720 192 3
-```
-
-By default, `first_modulus_bits = -1` fits a short base at or above
-`normal_scale_bits + log_message_ratio`. The 32-bit backend can choose a larger
-base to fit available primes (for example, 20+20 bits for normal scale 30).
-For 64-bit mode, with the default message-ratio log of 5:
-
-| Normal scale bits | Automatic first modulus target |
-|---:|---:|
-| 50 | 55 |
-| 55 | 60 |
-| 56 | 61 |
-| 57 | 62 |
-
-The existing Boot implementation requires the first-modulus target to be at most
-62 bits, so normal scale 58 with the default ratio is rejected. The ratio is never
-changed implicitly. `normal_scale_bits` and `boot_scale_bits` are peer fields;
-advanced circuit settings `num_cts_levels`, `num_stc_levels` and `log_message_ratio`
-are also available directly on the configuration. Set `config.first_modulus_bits = 60` explicitly to retain the
-previous normal50/first60 configuration; explicit overrides must also satisfy the
-Boot constraints. The internal `boot_scale_bits` does not select the first modulus.
-
-Run `bootstrap_scale_probe auto-first` to check normal scales 50/55/56 with
-automatic first moduli, Boot scale 56, five P primes, and 14 output multiplication
-levels. `bootstrap_scale_probe 14-p5` retains the previous explicit first60 probe.
-The `normal50_boot56_p5` case in `boot_test` now uses the automatic first modulus.
-See `unittest/ParameterLiteral.cpp` for additional lower-level examples.
-
-The default encryption level must equal the StC **start** level. The Boot output
-level is that level minus the StC depth. EvalMod keeps the existing coupled
-coefficient/double-angle preset. Invalid configurations throw `std::invalid_argument`
-before CUDA allocation through the checked factory/resolver. This validates
-structural/arithmetic constraints, not security or accuracy of arbitrary chains.
-Legacy constructors remain available. Parameter initialization uses C++ literals;
-the JSON loader and JSON build dependency have been removed. Unit-test presets
-are defined in `unittest/TestParameters.h`, including the configuration above.
-
-Checks:
+首次配置会通过 CMake FetchContent 下载 RMM 22.12 及其依赖，需要联网。如果已有 RMM 22.12 头文件和系统 spdlog，可在配置时增加：
 
 ```bash
-# CPU-only, no CUDA toolkit or third-party libraries required:
-c++ -std=c++17 -O2 -Iinclude tests/parameter_literal_test.cpp \
-  src/extension/BootParameter.cpp -o /tmp/parameter_literal_cpu_test
-/tmp/parameter_literal_cpu_test
-
-# After the normal CUDA build:
-./build/unittest/parameter_literal_test
-./build/unittest/boot_test
-./build/unittest/bootstrap_scale_probe 14-p5
+-DCHEDDAR_RMM_INCLUDE_DIR=/path/to/rmm/include
 ```
 
-## Backend-aware modulus switching
+此选项要求系统提供可被 `find_package(spdlog)` 找到的 spdlog。
 
-```cpp
-context->ModSwitch(output, input, target_level);
-context->ModSwitch(input, input, target_level); // In-place is also supported.
+## 3. 准备权重和 CIFAR-10 数据
+
+仓库不附带模型权重或 CIFAR-10 数据，运行程序也不会自动下载。请准备 CIFAR-10 **二进制格式**的测试文件 `test_batch.bin`，不是 Python pickle 版本。
+
+创建权重导出环境：
+
+```bash
+python3 -m venv .venv
+source .venv/bin/activate
+python3 -m pip install numpy onnx
 ```
 
-For 64-bit ciphertexts, this retains the requested main-Q prefix and sets the
-scale to `param.GetScale(target_level)`, preserving slot count and polynomial
-degree. It performs no rescale, coefficient adjustment, NTT or key switching.
-Decoded values therefore gain a factor of `input.GetScale() / param.GetScale(target_level)`;
-when the two scales are close, this is a small multiplicative error. In-place calls
-shrink logical buffer lengths; out-of-place calls copy only retained residues.
-Both in-place and same-level calls set the target scale. Terminal/P inputs,
-non-prefix targets and targets above `default_encryption_level` (which have no
-configured scale) are rejected, as are negative targets or attempts to raise level.
+以下路径均需替换为本机实际路径。可选择一种受支持的权重来源：
 
-For 32-bit ciphertexts, `ModSwitch` delegates to the existing `LevelDown`, including
-its encoded-one multiplication, rescaling, scale evolution and preconditions.
-The original `LevelDown` and all Boot preparation calls remain unchanged. The
-64-bit policy assumes the input scale is close to the planned scale; arbitrary
-input scales can introduce a substantial gain error. It does not compensate
-that error by multiplying the ciphertext.
+```bash
+# AE ResNet20 已融合权重目录（包含 conv1_reparam.weight 等 NumPy 文件）
+python3 scripts/export_resnet_weights.py \
+  /path/to/resnet20_fused models/resnet20.bin
 
-Run `build/unittest/modswitch_test` for residue/metadata checks, decryption,
-invalid-target/base checks and exact comparison with all three legacy 32-bit
-presets, including main/terminal exchanges.
-
-## GPU encoding and decoding
-
-The existing `Encode` API uses the GPU on both word widths:
-
-```cpp
-Plaintext<uint64_t> pt;
-context->encoder_.Encode(pt, level, scale, message); // num_aux defaults to 0
-// Explicit reference implementation, useful for validation:
-context->encoder_.EncodeCPU(pt, level, scale, message);
+# 或：固定结构、已折叠 BatchNorm 的 CIFAR ResNet ONNX
+python3 scripts/export_resnet_weights.py \
+  /path/to/resnet20_cifar10_train.onnx models/resnet20.bin --depth 20
 ```
 
-Host messages are zero-padded to a power of two and uploaded once. SpecialIFFT,
-bit reversal, normalization, scaling, integer truncation, RNS conversion and NTT
-run on the GPU. SpecialIFFT uses up to two shared-memory kernels instead of one
-launch per stage. The output keeps the requested scale and existing sparse-slot,
-main/terminal/auxiliary-prime and Montgomery/NTT layouts. Finite coefficients
-wider than 64 bits are reduced using their binary integer representation, without
-rounding the moduli to `double`. Input validation remains on the host and also
-computes a conservative bound on FFT and scaled coefficients. Ordinary inputs
-need no overflow-status allocation or readback; inputs outside that proven range
-retain the GPU overflow check and status readback before NTT.
+ONNX 导出器匹配固定的层命名及结构，不支持任意 ResNet ONNX，也不会自动折叠 BatchNorm。其他深度使用对应的 ONNX 文件并设置 `--depth 32`、`44`、`56` 或 `110`，输出为 `models/resnet32.bin` 等。导出同时生成包含归一化参数、张量清单及 SHA-256 的同名 `.json` 文件。C++ 运行程序无需安装 NumPy 或 ONNX。
 
-`EncodeCPU` retains the host SpecialIFFT and BigInt conversion followed by GPU
-NTT. `Decode` now performs INTT, exact mixed-radix CRT reconstruction, centered
-integer conversion and SpecialFFT on the GPU; it transfers only the final complex
-slots back to the host. Modulus bounds and modular inverses are prepared once
-when constructing the encoder. CRT integers are reconstructed before conversion
-to double, avoiding cancellation of large floating-point CRT terms. The GPU
-conversion truncates low mantissa bits, matching GMP; a TomMath CPU reference may
-differ in its last floating-point bits.
+## 4. 运行 ResNet
 
-`EncodeConstant` runs exact truncation, RNS reduction and Montgomery conversion in
-one GPU kernel, retaining the scalar interface and scale metadata. Finite inputs,
-positive finite scale and finite scaled products are checked on the host. Explicit
-`DecodeCPU` and `EncodeConstantCPU` methods retain the reference implementations.
-Decode continues to support Q-only plaintexts, including terminal and short bases;
-auxiliary-prime plaintexts are rejected.
+以下命令均在仓库根目录执行。先用单张图像检查卷积，再运行完整 ResNet20：
 
-```cpp
-std::vector<Complex> decoded;
-context->encoder_.Decode(decoded, pt);
-Constant<uint64_t> constant;
-context->encoder_.EncodeConstant(constant, level, scale, -0.25);
+```bash
+build/example/resnet_cifar --mode conv \
+  --weights models/resnet20.bin --cifar /path/to/test_batch.bin
+
+build/example/resnet_cifar --mode full \
+  --weights models/resnet20.bin --cifar /path/to/test_batch.bin \
+  --start 0 --count 1 --relu-range 10
 ```
 
-Run `build/unittest/codec_gpu_test` for CPU/GPU decoding comparisons, exact
-centered-CRT boundary cases, bitwise constant RNS comparisons and synchronized
-end-to-end timings. Single-constant GPU launches are small, so performance should
-be assessed with the measured chain length and call pattern.
-Run `build/unittest/encode_test` for CPU/GPU residue comparisons, decode checks,
-invalid-input checks and end-to-end timing (including upload and completion).
+模型深度从权重文件读取，无需向运行程序传入 `--depth`。完整模型的运行参数建议与现有验证脚本一致：
 
-## License and Citing
+| 模型 | 权重文件 | `--relu-range` |
+| --- | --- | ---: |
+| ResNet20 | `models/resnet20.bin` | 10 |
+| ResNet32 | `models/resnet32.bin` | 10 |
+| ResNet44 | `models/resnet44.bin` | 10 |
+| ResNet56 | `models/resnet56.bin` | 12 |
+| ResNet110 | `models/resnet110.bin` | 24 |
 
-See the [License](./LICENSE).
-Cheddar (all the files in this repository) is licensed under the MIT License.
+例如：
 
-Cheddar dynamically links the following third-party libraries:
-* NVIDIA CUDA Runtime library (cudart), which is provided under the NVIDIA CUDA Toolkit End User License Agreement:
-https://docs.nvidia.com/cuda/eula/index.html
-* RMM (licensed under the Apache 2.0 License): https://github.com/rapidsai/rmm
-* libtommath (public domain software): https://github.com/libtom/libtommath
-* GoogleTest (licensed under the BSD 3-Clause License): https://github.com/google/googletest
-* GMP (licensed under the LGPL v3): https://gmplib.org/
-
-When using Cheddar (or its parameter presets), please cite the following paper:
-```
-@inproceedings{asplos-2026-cheddar,
-  author = {Choi, Wonseok and Kim, Jongmin and Ahn, {Jung Ho}},
-  title = {Cheddar: {A} Swift Fully Homomorphic Encryption Library Designed for {GPU} Architectures},
-  booktitle = {Proceedings of the 31st ACM International Conference on Architectural Support for Programming Languages and Operating Systems},
-  year = {2025},
-  url = {https://doi.org/10.1145/3760250.3762223},
-  doi = {10.1145/3760250.3762223}
-}
+```bash
+build/example/resnet_cifar --mode full \
+  --weights models/resnet110.bin --cifar /path/to/test_batch.bin \
+  --start 0 --count 1 --relu-range 24
 ```
 
-## References
+这些激活范围来自有限样本检查，不构成全数据集范围保证。程序会检查激活范围，超出时退出，不会自动裁剪或放宽范围。
 
-1. Samardzic, Nikola, and Daniel Sanchez. "Bitpacker: Enabling High Arithmetic Efficiency in Fully Homomorphic Encryption Accelerators." ACM International Conference on Architectural Support for Programming Languages and Operating Systems (ASPLOS). 2024. [Link](https://doi.org/10.1145/3620665.3640397)
-2. Cheon, Jung Hee, et al. "Grafting: Complementing RNS in CKKS." IACR Cryptology ePrint Archive. 2024. [Link](https://eprint.iacr.org/2024/1014)
+常用参数：
+
+| 参数 | 默认值 | 含义 |
+| --- | --- | --- |
+| `--mode` | `full` | `reference`、`encode`、`boot`、`relu`、`conv`、`stem`、`blocks`、`projection` 或 `full` |
+| `--start` | `0` | 起始图像索引 |
+| `--count` | `1` | 连续处理的图像数量 |
+| `--scale-bits` | `40` | 支持 `40`、`48`；会同时选择配套密码参数 |
+| `--relu-range` | `10` | 激活归一化范围 |
+| `--baby-step` | `0` | 自动选择逐层 BSGS 策略；可用 1–128 内的 2 的幂覆盖 |
+| `--max-blocks` | `1` | `blocks` 模式的残差块数量上限 |
+| `--probe-stage` | `2` | `projection` 模式选择 stage 2 或 3 |
+
+无需权重和数据即可运行基础检查：
+
+```bash
+build/example/resnet_cifar --mode encode
+build/example/resnet_cifar --mode boot
+build/example/resnet_cifar --mode relu
+```
+
+默认密码配置为 32 位后端、环维度 65536、固定 16384 slots、普通/Boot scale 目标 40/58 bits、Boot 输出 level 8。程序输出 `PARAM` 记录实际解析的参数。实现细节见 [ResNet 技术说明](example/README.resnet.md)。
+
+## 5. 验证结果与计时
+
+每张图像输出 `RESULT` JSON，包含预测、数值误差及分项计时；同时输出逐层检查与 GPU 编码审计。范围、数值或编码检查失败会以非零退出码终止。
+
+程序将密文结果与相同多项式的明文参考逐层比较，实部和虚部误差阈值均为原始实数单位下的 `1e-2`，并额外报告精确 ReLU 参考的预测与近似误差。
+
+准备全部五种深度的权重后，可执行分阶段验证：
+
+```bash
+python3 scripts/validate_resnet.py \
+  --binary build/example/resnet_cifar \
+  --models models \
+  --cifar /path/to/test_batch.bin \
+  --output validation/resnet \
+  --count 10
+```
+
+脚本先检查编码、Boot、ReLU、卷积和残差块，再运行五个完整模型；遇到第一个失败即停止，保存日志、退出码、哈希和 `report.json`。脚本还要求完整模型的密文预测与多项式、精确 ReLU 两种参考预测一致。
+
+如需观察预热后的耗时，可在同一进程处理 11 张图像：
+
+```bash
+build/example/resnet_cifar --mode full \
+  --weights models/resnet20.bin --cifar /path/to/test_batch.bin \
+  --start 0 --count 11 --relu-range 10
+```
+
+程序不会自动剔除预热结果；统计时需自行排除图像 0。权重准备、密钥、输入、在线计算和验证分别计时。当前计时包含同步和验证插桩，属于正确性验证运行，不能直接视为纯 GPU kernel 或稳态端到端推理性能。
+
+## License
+
+本项目使用 [MIT License](LICENSE)。
