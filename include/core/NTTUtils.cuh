@@ -418,7 +418,7 @@ struct NTTLaunchConfig {
   __host__ __device__ static constexpr int LogWarpBatching() {
     if ((type == NTTType::NTT && phase == Phase::Phase1) ||
         (type == NTTType::INTT && phase == Phase::Phase2)) {
-      if (log_degree == 16) return 4;
+      if (log_degree == 16 || log_degree == 17) return 4;
     }
     // else
     return 0;

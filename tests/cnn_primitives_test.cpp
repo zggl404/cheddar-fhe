@@ -1,5 +1,7 @@
 #include <algorithm>
 #include <cmath>
+#include <chrono>
+#include <fstream>
 #include <iostream>
 #include <string>
 
@@ -15,7 +17,7 @@ void Require(bool condition, const std::string& message) {
 }
 
 template<class Word>
-void Run(int log_degree, int slots, const std::string& mode) {
+void Run(int log_degree, int slots, const std::string& mode,const std::string& dump_path) {
   BootConfig config;
   config.ring_dimension = 1 << log_degree;
   config.slot_count = slots;
@@ -56,6 +58,25 @@ void Run(int log_degree, int slots, const std::string& mode) {
   for (size_t i=0; i<actual.size(); ++i)
     Require(actual[i]==coefficients[i],"NTT round trip failed at coefficient "+std::to_string(i));
   std::cout << "CHECK ntt_exact coefficients=" << actual.size() << " PASS" << std::endl;
+  if(!dump_path.empty()) {
+    HostVector<Word> ntt;CopyDeviceToHost(ntt,transformed);std::vector<Word> canonical(ntt.size());
+    for(size_t i=0;i<ntt.size();++i) {
+      const int64_t prime=primes[i/param->degree_];
+      int64_t value=static_cast<std::make_signed_t<Word>>(ntt[i]);value%=prime;if(value<0)value+=prime;
+      canonical[i]=Word(value);
+    }
+    std::ofstream dump(dump_path,std::ios::binary);
+    Require(bool(dump.write(reinterpret_cast<const char*>(canonical.data()),canonical.size()*sizeof(Word))),"NTT dump failed");
+    for(int sample=-3;sample<10;++sample) {
+      Require(cudaDeviceSynchronize()==cudaSuccess,"NTT timing synchronization failed");
+      auto begin=std::chrono::steady_clock::now();
+      context->ntt_handler_.NTT(transformed_view,np,raw.ConstView(np.num_aux_*param->degree_),true);
+      context->ntt_handler_.INTT(restored_view,np,transformed.ConstView(np.num_aux_*param->degree_),true);
+      Require(cudaDeviceSynchronize()==cudaSuccess,"NTT timing synchronization failed");
+      const double ms=std::chrono::duration<double,std::milli>(std::chrono::steady_clock::now()-begin).count();
+      if(sample>=0)std::cout<<"NTT_SAMPLE index="<<sample<<" roundtrip_wall_ms="<<ms<<std::endl;
+    }
+  }
 
   UserInterface<Word> client(context);
   using Ct=Ciphertext<Word>;
@@ -133,13 +154,14 @@ void Run(int log_degree, int slots, const std::string& mode) {
 
 int main(int argc,char** argv) {
   try {
-    Require(argc==5,"usage: cnn_primitives_test word_bits log_degree slots basic|linear|boot|relu");
+    Require(argc==5||argc==6,"usage: cnn_primitives_test word_bits log_degree slots basic|linear|boot|relu [ntt_dump]");
     const int bits=std::stoi(argv[1]),log_degree=std::stoi(argv[2]),slots=std::stoi(argv[3]);
     const std::string mode=argv[4];
     Require(log_degree==16||log_degree==17,"log_degree must be 16 or 17");
     Require(mode=="basic"||mode=="linear"||mode=="boot"||mode=="relu","invalid mode");
-    if(bits==32)Run<uint32_t>(log_degree,slots,mode);
-    else if(bits==64)Run<uint64_t>(log_degree,slots,mode);
+    const std::string dump_path=argc==6?argv[5]:"";
+    if(bits==32)Run<uint32_t>(log_degree,slots,mode,dump_path);
+    else if(bits==64)Run<uint64_t>(log_degree,slots,mode,dump_path);
     else throw std::runtime_error("word_bits must be 32 or 64");
   } catch(const std::exception& e) {std::cerr<<"FAILED "<<e.what()<<std::endl;return 1;}
 }

@@ -148,6 +148,7 @@ class Runner {
       Check(*states[0],"input");
     }
     for(size_t i=0;i<count;++i) {
+      const Timing node_begin=timing;
       const auto& node=model_.nodes[i];auto input_state=states.at(node.inputs[0]);Require(bool(input_state),"released CNN input");
       std::shared_ptr<State> output;
       if(node.operation==Operation::Flatten)output=input_state;  // FC retains the physical CHW slot mapping.
@@ -186,6 +187,9 @@ class Runner {
       }
       // Also validates capacity in reference mode before allocating GPU plaintexts.
       cnn::Pack(output->polynomial,o_.slots,o_.range);Check(*output,node.name);
+      std::cout<<"NODE_TIMING {\"name\":\""<<node.name<<"\",\"operation\":"<<uint32_t(node.operation)
+               <<",\"online_ms\":"<<timing.online-node_begin.online<<",\"weights_ms\":"<<timing.weights-node_begin.weights
+               <<",\"keys_ms\":"<<timing.keys-node_begin.keys<<",\"checks_ms\":"<<timing.checks-node_begin.checks<<"}"<<std::endl;
       states[i+1]=output;
       for(auto source:node.inputs)if(--uses[source]==0)states[source].reset();
     }

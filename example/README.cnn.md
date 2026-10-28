@@ -179,5 +179,75 @@ N17 的精确 NTT 往返、32 位满槽/半槽 Boot/ReLU、64 位基础算术，
 
 本次接受的报告为 `validation/cnn/ciphertext-attempt04/report.json`；
 参数 SHA-256 为 `2b37e7a38cb9d27d782c4fe4d9241b105f56ed78c84fc443f28d34185a5f4c1e`。
-验证报告记录的全部源码哈希已与当前工作区核对一致。早期构建、缺失零 giant-step 分块和
+该次报告的源码对应初始实现提交 `aaa2b9b`。早期构建、缺失零 giant-step 分块和
 显存不足的失败日志一并保留，未计入通过结果。
+
+## N17 NTT online 优化与复测
+
+`NTTLaunchConfig::LogWarpBatching()` 对 N17 的 NTT 第一阶段和 INTT 第二阶段
+从 0 改为 4，每个线程块处理 16 组。对应线程数从 32 增至 512，每个素数的
+grid.x 从 512 降至 32；32 位后端的每块共享内存从 1 KiB 增至 16 KiB。
+蝶形运算、stage merging、素数和缩放配置保持相同，N16 的配置也保持相同。
+
+`NODE_TIMING` 在原有计时区间外输出每个节点的时间差，所有节点的 online 之和
+必须与 `RESULT.online_ms` 相符。新增复测脚本使用相同的同步墙钟边界，
+单列准备、加密及校验时间，并检查在线编码为零、固定 Boot 次数、全部逐层误差、
+FHE/多项式/精确 ReLU/独立 PyTorch 的最终 top-1 和精确 ReLU logits 一致性。
+
+```sh
+python3 scripts/benchmark_cnn_online.py --binary build/example/cnn_cifar \
+  --models models --cifar /path/to/test_batch.bin --reference-dir validation/cnn \
+  --output validation/online/run-01 --label warp4 --count 6 --warmup 1 \
+  --channel-tile 512 --diagonal-chunk 64 --baby-step 128
+```
+
+首图为预热，图 1–5 为正式采样；输出保留原始样本、中位数、均值、范围、算子拆分、
+GPU 温度/频率快照和源文件（含 `.cuh`）、二进制、共享库、模型、数据及参数哈希。
+脚本从指定二进制同一构建目录加载 `libcheddar.so`，拒绝覆盖已有报告。
+比较历史二进制时，应从与该构建对应的源码快照运行脚本，使源码哈希准确对应被测版本。
+
+基础程序可额外输出规范化 RNS 变换结果，并测量 NTT+INTT 的同步墙钟时间：
+
+```sh
+build/example/cnn_primitives_test 32 17 65536 basic /tmp/ntt32-n17.rns
+```
+
+提供输出路径时执行 3 次预热和 10 次正式 NTT 往返采样。
+本轮基线和优化版的 32/64 位 N17、32 位 N16 变换结果均逐系数完全一致；
+32 位 N17 往返中位数从 0.103129 ms 降至 0.036486 ms（2.83 倍），
+64 位 N17 从 0.086128 ms 降至 0.059743 ms（1.44 倍）。这些是特定 Q/P 配置的
+NTT 往返收益，使用 level 2 的全部活跃 Q/P 素数；N16 不据此宣称性能提升。
+
+2026-10-28–29 在同一 RTX 5090 上分别完整重建基线和优化版，五个模型按顺序执行，
+每个模型的两版交替先后顺序。固定 N=131072、65536 槽、32 位后端、40/58 位 scale
+目标、ReLU 范围 10、channel tile 512、diagonal chunk 64、baby step 128。
+下表为各版本正式 5 张图的 online 中位数及 [最小值, 最大值]，单位 ms。
+
+| 模型 | 基线 online | 优化后 online | 中位数降幅 | 优化版最大逐层密文误差 |
+|---|---:|---:|---:|---:|
+| VGG11 | 4026.661 [4025.718, 4029.857] | 3480.267 [3477.949, 3480.639] | 13.57% | 3.194e-4 |
+| VGG16 | 6475.815 [6475.704, 6477.711] | 5592.689 [5589.731, 5594.884] | 13.64% | 1.956e-4 |
+| MobileNet | 5994.022 [5993.042, 5996.980] | 4448.262 [4447.254, 4452.047] | 25.79% | 1.149e-3 |
+| SqueezeNet | 3816.211 [3815.426, 3816.928] | 2672.788 [2671.268, 2673.744] | 29.96% | 1.489e-3 |
+| AlexNet | 5973.186 [5972.267, 5974.565] | 5411.373 [5408.528, 5412.056] | 9.41% | 7.358e-4 |
+
+含预热共 60 次整网推理全部通过。Boot 次数仍分别为 16/26/54/36/14，在线编码为零，
+同多项式逐层误差门槛仍为 1e-2，四条执行路径的 top-1 均一致。
+C++ 精确 ReLU logits 与独立 PyTorch 的最大差异为 4.79e-11。
+本轮 FHE 与精确 ReLU 最终 logits 的最大差异为 0.2576（VGG16），包含固定多项式近似误差；
+表中误差列比较的是相同多项式参考。六张图的检查不代表完整 CIFAR-10 准确率。
+
+VGG11 的算子均值中，ReLU 从 1011.5 ms 降至 607.1 ms，卷积从 2930.3 ms 降至
+2804.0 ms。不同网络的收益取决于实际算子构成。全部节点时间之和与原 online 时间一致，
+原 N16 ResNet20 整网回归也通过：38 次 Boot、最大逐层误差 8.885e-5、预测一致。
+
+本轮证据位于 `validation/online_20261028/`：
+
+- `paired/FAMILY/{baseline,warp4}/report.json`：逐图、逐节点结果和原始日志。
+- `comparison.json`、`compare.py`：跨版本参数、源码、权重、数据、明文参考及采样范围核对。
+- `{baseline,warp4}-primitives/`：NTT 原始 RNS 输出、微测及算术检查。
+- `build-audit.json`、`resnet20-regression.json`：相同构建选项和 N16 整网回归。
+
+两版记录的计算源码仅 `include/core/NTTUtils.cuh` 不同，优化版报告的 81 个源码哈希
+已与工作区核对一致。参数 SHA-256 仍为
+`2b37e7a38cb9d27d782c4fe4d9241b105f56ed78c84fc443f28d34185a5f4c1e`。
