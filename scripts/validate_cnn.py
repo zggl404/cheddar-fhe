@@ -20,7 +20,6 @@ def main():
     parser.add_argument('--reference-dir',type=Path,required=True)
     parser.add_argument('--families',nargs='+',default=['vgg11','vgg16','mobilenet','squeezenet','alexnet'],choices=['vgg11','vgg16','mobilenet','squeezenet','alexnet'])
     parser.add_argument('--count',type=int,default=3);parser.add_argument('--relu-range',type=float,default=10)
-    parser.add_argument('--channel-tile',type=int,default=512)
     parser.add_argument('--encode-mode',choices=('auto','pre','stream'),default='auto')
     args=parser.parse_args()
     if not 1<=args.count<=10000:parser.error('count must be in [1,10000]')
@@ -41,7 +40,7 @@ def main():
         if golden['source_sha256']!=manifest['source_sha256'] or golden['cifar_sha256']!=report['cifar_sha256']:
             raise RuntimeError('independent reference source/data hash mismatch')
         command=[sys.executable,str(root/'scripts/run_inference.py'),'--binary',str(args.binary),'--log-format','json','--verbose','1','--encode-mode',args.encode_mode,'--weights',str(model),'--cifar',str(args.cifar),'--stop-after',str(stop),
-                 '--count',str(count),'--relu-range',str(args.relu_range),'--channel-tile',str(args.channel_tile)]
+                 '--count',str(count),'--relu-range',str(args.relu_range)]
         cell=dict(name=name,command=command,model_sha256=sha(model),log=f'{name}.log',images=[],image_timings=[])
         report['cells'].append(cell);save();parameters=None;gpu_only=False
         with (args.output/cell['log']).open('w',buffering=1) as log:
@@ -70,7 +69,7 @@ def main():
             raise RuntimeError(f'{name}: result/timing image mismatch')
         if cell['exit_code'] or len(cell['images'])!=count or not gpu_only or not parameters:
             raise RuntimeError(f'{name}: executable/encoding audit failed')
-        if parameters['ring_dimension']!=131072 or parameters['slots']!=65536 or parameters['boot_output_level']!=8:
+        if parameters['ring_dimension']!=131072 or parameters['slots']!=65536 or parameters['boot_output_level']!=9:
             raise RuntimeError(f'{name}: parameter mismatch')
         if 'parameters' in report and report['parameters']!=parameters:raise RuntimeError('resolved parameters changed')
         report['parameters']=parameters

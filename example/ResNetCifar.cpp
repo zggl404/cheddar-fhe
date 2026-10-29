@@ -186,7 +186,7 @@ class Runner {
   void Encrypt(const Tensor& input) {
     timing.Cpu(InferencePhase::Input,[&]{reference=input;exact=input;});
     timing.Gpu(InferencePhase::Input,[&]{
-      auto packed=Pack(input,range_); Message message(packed.begin(),packed.end()); Pt plaintext;
+      auto packed=Pack(input,range_,PackedSlots(input)); Message message(packed.begin(),packed.end()); Pt plaintext;
       context_->encoder_.Encode(plaintext,2,context_->param_.GetScale(2),message);
       client_.Encrypt(ciphertext,plaintext);
     });
@@ -203,9 +203,8 @@ class Runner {
     timing.Gpu(InferencePhase::ValidationOutput,[&]{
       Pt plaintext; client_.Decrypt(plaintext,ciphertext);
       std::vector<Complex> values; context_->encoder_.Decode(values,plaintext);
-      auto expected=Pack(reference,range_), fp=Pack(exact,range_);
-      Require(ciphertext.GetNumSlots()==kSlots && values.size()==expected.size(),
-              "ResNet requires 16384 slots at "+name);
+      auto expected=Pack(reference,range_,ciphertext.GetNumSlots()), fp=Pack(exact,range_,ciphertext.GetNumSlots());
+      Require(values.size()==expected.size(),"ResNet slot count mismatch at "+name);
       double error=0,imaginary=0,approximation=0;
       for(size_t i=0;i<values.size();++i) {
         Require(std::isfinite(values[i].real()) && std::isfinite(values[i].imag()),"nonfinite ciphertext at "+name);
@@ -255,7 +254,7 @@ class Runner {
     Convolution(prefix+".conv1",projection?2:1); Relu(prefix+".relu1");
     Convolution(prefix+".conv2",1);
     Evaluate(InferencePhase::Graph,[&]{
-      if(!projection) context_->LevelDown(skip,skip,1);
+      if(!projection) context_->LevelDown(skip,skip,0);
       context_->Add(ciphertext,ciphertext,skip);
     });
     timing.Cpu(InferencePhase::Reference,[&]{Add(reference,skip_ref);Add(exact,skip_exact);});Check(prefix+".add");
@@ -403,7 +402,11 @@ int main(int argc,char** argv) {
       if(!options.run.Json())std::cout<<"Preparing Boot resources...\n"<<std::flush;
       report.PrepareBoot(Sync,[&]{runner.PrepareBoot();});
     }
-    if(options.mode=="full")runner.PrepareWeights();
+    if(options.mode=="full") {
+      runner.PrepareWeights();size_t free=0,total=0;
+      Require(cudaMemGetInfo(&free,&total)==cudaSuccess,"prepared memory query failed");
+      example::PrintPreparedMemory(options.run,total-free);
+    }
     runner.timing.Reset();const auto probe_begin=Clock::now();
     if(options.mode=="encode") EncodeProbe(context,*client,runner.timing);
     else if(options.mode=="relu" || options.mode=="boot") {

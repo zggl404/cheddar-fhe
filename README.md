@@ -10,7 +10,7 @@
 Python 3.10/3.11、CUDA 12.8、Blackwell GPU 为例；其他 GPU 的配置见[详细文档](docs/inference.md)。
 
 ```bash
-git clone --branch feature/cnn-n17 https://github.com/zggl404/cheddar-fhe.git
+git clone --branch feature/cnn-decomposition-gpu96 https://github.com/zggl404/cheddar-fhe.git
 cd cheddar-fhe
 
 # root 用户可以去掉 sudo。
@@ -136,4 +136,5 @@ FHE 对精确 ReLU 的误差包含激活多项式近似；逐层 `1e-2` 校验�
 不能替代原始网络的输出误差或全测试集准确率。
 
 底层参数、显存策略、分阶段验证和独立参考见[详细文档](docs/inference.md)。
+十个真实模型的全预编码时间、显存和输出误差见[96 GB GPU 实测报告](docs/gpu96-benchmark.md)。
 `models/`、`build/`、`validation/` 不提交到 GitHub。许可证见 [LICENSE](LICENSE)。

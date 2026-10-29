@@ -108,12 +108,20 @@ build/example/cnn_cifar --weights models/vgg11.bin --cifar /path/to/test_batch.b
 Flatten 是逻辑视图，FC 直接读取原 CHW 的物理槽映射。Concat 使用两个布局兼容、
 通道组对齐的分支，通过旋转后相加完成；两支的 level 在相加前对齐。
 
-密文输入从 level 2 开始。每个线性层消耗一个 level，每个 ReLU 使用两次普通 Boot
-并返回 level 2。池化之后的卷积支持从 level 1 到 level 0，再由 ReLU 刷新。
-每个输出位置的偏置只加一次。
+密文输入从 level 3 开始。普通/grouped 卷积和 FC 使用重复输入、通道归约、
+共享收集掩码消耗两层；stride=1 的 depthwise 卷积只需要空间权重，消耗一层。
+stride=2 的 depthwise 另有布局收集，消耗两层。Pool/GAP 先做空间 Trace，再收集，消耗一层。
+每个 ReLU 使用两次普通 Boot；CNN Boot 的可用输出为 level 9，ReLU 返回 level 3。
+因此支持卷积后直接接池化的 SqueezeNet 分支，没有额外插入 Boot。
+每个输出位置的偏置只加一次；分批求值时仅第一批加偏置。
+
+输出仍保持原有单份特征加零填充的布局，Concat 和独立明文参考不变。
+只有卷积/FC 的临时输入被重复；掩码在输出分组间复用，使用相邻分组位移累加，
+避免为每个分组分别保留旋转 key。AlexNet 的大 FC 同样使用分组和共享掩码。
+代码与验证结果见 [CNN 分解记录](../docs/cnn-decomposition.md)。
 
 ## 运行、内存和计时
 
 普通运行见[主 README](../README.md)。统一的三段及推理细分计时、
-预编码/实时编码、channel tile、diagonal chunk、baby step 和额外验证，
+预编码/实时编码和额外验证，
 见[详细文档](../docs/inference.md)。所有模型共用 schema_version=2。

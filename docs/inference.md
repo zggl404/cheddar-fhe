@@ -39,33 +39,34 @@ cmake --build build --clean-first --parallel 12
 | 配置 | 默认 |
 |---|---|
 | CNN 环维度 / 槽数 | N=131072 / 65536 |
-| ResNet 环维度 / 槽数 | N=65536 / 16384 |
+| ResNet 环维度 / Boot 槽数 | N=65536 / 16384；特征槽数随层变化 |
 | 后端 / normal、Boot scale 目标 | uint32 / 40、58 |
-| CNN channel tile | 512 |
-| CNN diagonal chunk | 64 |
-| CNN baby step | 128 |
-| ResNet baby step | 0：逐层选择 64/128/16 |
+| CNN 卷积 / FC | 重复输入分组、共享收集掩码、相邻分组旋转累加 |
+| CNN Pool / GAP | 空间 Trace 后收集；消耗一层 |
+| CNN / ResNet Boot 可用输出 | level 9 / level 8；ReLU 分别返回 level 3 / level 2 |
+| ResNet 卷积 | AE 式重复槽分组、通道 Trace、输出掩码；level 2→0 |
+| ResNet baby step | 仅用于池化/FC，默认 16 |
 | 编码方式 | auto |
 
 `--encode-mode auto` 在模型旋转密钥和 Boot 资源备齐后，估算整网 CKKS 权重缓存，
 包含 RMM bin 向上取整；预算取 CUDA 空闲容量加 RMM CUDA 池未使用容量，预留 4 GiB。
 可复用的固定块空闲量没有全部计入，选择偏保守。实际分配失败仍会明确报错。
-`pre` 强制整网驻留；`stream` 在每层/块求值前实时构造、编码并释放。
+`pre` 强制整网驻留；`stream` 在每层/输出分组批次求值前实时构造、编码并释放。
 预编码后同进程多图复用权重，所有整网模式复用提前准备的实际旋转密钥集合。
 不生成所有可能旋转距离的 key；推理阶段缺少 key 会失败。
 
-需要固定编码方式或调整 CPU/显存压力时：
+需要固定编码方式时：
 
 ```bash
 python scripts/run_inference.py --model vgg11 --cifar /data/test_batch.bin --encode-mode stream
-python scripts/run_inference.py --model vgg11 --cifar /data/test_batch.bin \
-  --channel-tile 16 --diagonal-chunk 32 --baby-step 128
 ```
 
-channel tile 降低可减少 CPU 稀疏矩阵的瞬时内存，但可能增加重复编码和求值。
-diagonal chunk 限制同时构造的明文数量。改变这些参数后应保存配置并重新测量。
+CNN 的空间分组由张量布局自动确定，实时编码按固定的权重条数预算划分输出分组。
+旧 CNN 的 `--channel-tile`、`--diagonal-chunk`、`--baby-step` 已移除，避免接受无效配置。
 CKKS 展开权重大小远大于原始 ONNX；不能由 ONNX 文件大小判断是否能整网预编码。
 `resident_gpu_bytes` 含 RMM 保留空间，只是输出时快照，不是峰值或最低显存要求。
+各模型预编码缓存、旋转 key 数量及实时编码工作集见[CNN 分解记录](cnn-decomposition.md)；
+[此前静态统计](model-memory-static.md)中的其他 CNN 数字对应旧实现。
 
 ## 统一计时
 
@@ -73,6 +74,8 @@ CKKS 展开权重大小远大于原始 ONNX；不能由 ONNX 文件大小判断�
 完整运行 TIMING 仅由外层入口发布，C++ 不再另外发布 main 边界的总时间。
 JSON 中 `RESULT` 只含正确性与资源数据；`IMAGE_TIMING` 为每张图，
 `TIMING` 为整次运行。所有字段以 ms 表示，所有父项均由互斥子项汇总。
+`PREPARED_MEMORY` 在全部准备完成、第一张输入处理前记录 CUDA 显存占用快照，
+包含内存池保留空间；它是资源记录，不增加另一套计时。
 不提供第二套算子 online 时间；重复采样由 `run_inference.py --count N --warmup W` 完成。
 
 | 字段 | 定义 |
@@ -151,6 +154,11 @@ GPU 基础检查：
 
 ```bash
 build/example/parameter_literal_test
+build/example/resnet_conv_plan_test
+build/example/resnet_ae_test
+build/example/cnn_linear_plan_test
+build/example/cnn_decomposition_test
+build/example/cnn_decomposition_test 0  # 独立进程验证 Boot9 -> ReLU level 3
 build/example/cnn_primitives_test 32 16 16384 linear
 build/example/cnn_primitives_test 32 17 65536 relu
 ```
@@ -177,7 +185,9 @@ python scripts/validate_cnn.py --binary build/example/cnn_cifar --models models 
 数值门槛仍为逐层所有配置槽、原始实数单位下实部/虚部误差 <=1e-2，
 明文/FHE 的最终 logits 和 top-1 单独输出；解密结果不反馈到密文图。
 
-本次新计时已提供 CPU 计时及跨进程协议测试；尚未在 GPU 上重新编译和运行。
-此前 GPU 的正确性/性能记录不能充当新计时口径下的验证或性能数字。
+新计时已通过 CPU 计时及跨进程协议测试；AE 式卷积改动后的 ResNet20 已在
+RTX 5090 上按此口径完成 GPU 验证，见[验证记录](resnet-ae-validation.md)。
+全部十个模型随后已在 96 GB GPU 上以本地真实 ONNX 权重完成整网预编码测评，
+每模型 11 张图、1 张预热，见[96 GB 实测报告](gpu96-benchmark.md)。
 
 网络实现细节：[ResNet](../example/README.resnet.md)、[其他 CNN](../example/README.cnn.md)。

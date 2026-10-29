@@ -6,6 +6,7 @@
 #include "UserInterface.h"
 #include "extension/BootParameterLiteral.h"
 #include "extension/CnnOps.h"
+#include "extension/CnnDecomposed.h"
 #include "extension/ResNetPolynomial.h"
 #include "InferenceRun.h"
 #include "common/Assert.h"
@@ -21,7 +22,7 @@ using Clock=std::chrono::steady_clock;
 namespace {
 struct Options {
   std::string weights,cifar,mode="full";
-  int log_degree=17,slots=65536,start=0,count=1,stop_after=0,channel_tile=512,diagonal_chunk=64,baby_step=128,scale_bits=40;
+  int log_degree=17,slots=65536,start=0,count=1,stop_after=0,scale_bits=40;
   double range=10;
   example::RunOptions run;
 };
@@ -33,9 +34,7 @@ Options Parse(int argc,char** argv) {
     else if(key=="--mode")o.mode=value;else if(key=="--log-degree")o.log_degree=std::stoi(value);
     else if(key=="--slots")o.slots=std::stoi(value);else if(key=="--start")o.start=std::stoi(value);
     else if(key=="--count")o.count=std::stoi(value);else if(key=="--stop-after")o.stop_after=std::stoi(value);
-    else if(key=="--channel-tile")o.channel_tile=std::stoi(value);
-    else if(key=="--diagonal-chunk")o.diagonal_chunk=std::stoi(value);
-    else if(key=="--baby-step")o.baby_step=std::stoi(value);else if(key=="--relu-range")o.range=std::stod(value);
+    else if(key=="--relu-range")o.range=std::stod(value);
     else if(key=="--scale-bits")o.scale_bits=std::stoi(value);
     else if(!o.run.Parse(key,value))throw std::runtime_error("unknown option: "+key);
   }
@@ -44,8 +43,6 @@ Options Parse(int argc,char** argv) {
   Require(o.log_degree==16||o.log_degree==17,"log-degree must be 16 or 17");
   Require(o.slots>0&&o.slots<=(1<<(o.log_degree-1))&&!(o.slots&(o.slots-1)),"invalid slot count");
   Require(o.start>=0&&o.count>0&&o.start+o.count<=10000&&o.stop_after>=0,"invalid image/node range");
-  Require(o.channel_tile>0&&o.channel_tile<=512&&o.diagonal_chunk>0&&o.diagonal_chunk<=512,"invalid preparation chunk");
-  Require(o.baby_step>0&&o.baby_step<=128&&!(o.baby_step&(o.baby_step-1)),"invalid baby step");
   Require(std::isfinite(o.range)&&o.range>0,"invalid activation range");
   Require(o.scale_bits==40||o.scale_bits==48,"scale-bits must be 40 or 48");return o;
 }
@@ -105,48 +102,17 @@ class Runner {
       Require(real<=1e-2&&imaginary<=1e-2,"CNN numerical gate failed at "+name);
     });
   }
-  struct LinearCache {
-    std::vector<std::unique_ptr<resnet::PackedLinear>> chunks;
-    Pt bias;
-    bool has_bias=false;
-  };
   bool preencoded=false;
   size_t NodeCount() const {return o_.stop_after?std::min(size_t(o_.stop_after),model_.nodes.size()):model_.nodes.size();}
-  template<class Visitor>
-  void VisitChunks(const Tensor& shape,const Node& node,int level,bool encode,Visitor consume) {
-    size_t diagonal_count=0,chunks=0;
-    const bool depthwise=node.operation==Operation::Conv&&node.groups==shape.channels&&node.channels==shape.channels;
-    const int tile=depthwise||node.operation==Operation::AveragePool||node.operation==Operation::GlobalAveragePool?node.channels:o_.channel_tile;
-    for(int first=0;first<node.channels;first+=tile) {
-      SparseDiagonals sparse;
-      timing.Gpu(InferencePhase::WeightPrepare,[&]{sparse=LinearDiagonals(node,shape,model_,first,std::min(first+tile,node.channels),o_.slots);});
-      if(sparse.empty())sparse[0]={};
-      diagonal_count+=sparse.size();auto it=sparse.begin();
-      while(it!=sparse.end()) {
-        std::unique_ptr<resnet::PackedLinear> operation;
-        timing.Gpu(InferencePhase::WeightPrepare,[&]{
-          resnet::Diagonals diagonals;
-          for(int n=0;n<o_.diagonal_chunk&&it!=sparse.end();++n,++it) {
-            Message diagonal(o_.slots);for(auto [slot,value]:it->second)diagonal[slot]+=value;
-            diagonals.emplace(it->first,std::move(diagonal));
-          }
-          operation=std::make_unique<resnet::PackedLinear>(context_,std::move(diagonals),
-              std::vector<double>(o_.slots),level,o_.baby_step,std::vector<std::pair<int,int>>{},encode);
-        });
-        consume(std::move(operation));++chunks;
-      }
-    }
-    if(o_.run.verbose)timing.Cpu(InferencePhase::ValidationOutput,[&]{std::cout<<"LINEAR name="<<node.name<<" diagonal_parts="<<diagonal_count<<" chunks="<<chunks<<std::endl;});
-  }
   void PrepareModel() {
     const size_t count=NodeCount();input_shapes_.assign(count,Tensor(1,1));input_levels_.resize(count);
     std::vector<Tensor> shapes(count+1,Tensor(1,1));shapes[0]=Tensor(3,32);
-    std::vector<int> levels(count+1,2);EvkRequest requests;
+    std::vector<int> levels(count+1,3);EvkRequest requests;
     for(size_t i=0;i<count;++i) {
       const auto& node=model_.nodes[i];const auto& shape=shapes[node.inputs[0]];const int level=levels[node.inputs[0]];
       input_shapes_[i]=shape;input_levels_[i]=level;
       if(node.operation==Operation::Flatten||node.operation==Operation::ReLU) {
-        shapes[i+1]=shape;levels[i+1]=node.operation==Operation::ReLU?2:level;
+        shapes[i+1]=shape;levels[i+1]=node.operation==Operation::ReLU?3:level;
       } else if(node.operation==Operation::Concat) {
         shapes[i+1]=OutputTensor(node);levels[i+1]=std::min(level,levels[node.inputs[1]]);
         const int group=shape.pack*shape.pack;
@@ -155,13 +121,9 @@ class Runner {
         const int rotation=(o_.slots-shift)%o_.slots;
         if(rotation)requests.AddRequest(rotation,levels[i+1]);
       } else {
-        Require(level>0,"insufficient CNN level during preparation");shapes[i+1]=OutputTensor(node);levels[i+1]=level-1;
-        VisitChunks(shape,node,level,false,[&](std::unique_ptr<resnet::PackedLinear> op){
-          op->AddRequiredRotations(requests);estimated_bytes_+=op->EstimatedBytes();
-        });
-        if(node.operation==Operation::Conv||node.operation==Operation::FC)
-          estimated_bytes_+=context_->memory_pool_.AllocationBytes(
-              size_t(context_->param_.degree_)*sizeof(Word)*context_->param_.LevelToNP(level-1).GetNumTotal());
+        DecomposedLinear descriptor(context_,node,shape,model_,level,o_.slots,o_.range,false);
+        descriptor.AddRequiredRotations(requests);estimated_bytes_+=descriptor.EstimatedBytes();
+        shapes[i+1]=OutputTensor(node);levels[i+1]=descriptor.OutputLevel();
       }
     }
     model_rotations_=requests.size();Keys(requests);
@@ -180,36 +142,27 @@ class Runner {
       for(size_t i=0;i<NodeCount();++i) {
         const auto& node=model_.nodes[i];
         if(node.operation==Operation::Flatten||node.operation==Operation::ReLU||node.operation==Operation::Concat)continue;
-        auto cache=std::make_unique<LinearCache>();
-        VisitChunks(input_shapes_[i],node,input_levels_[i],true,[&](std::unique_ptr<resnet::PackedLinear> op){cache->chunks.push_back(std::move(op));});
-        if(node.operation==Operation::Conv||node.operation==Operation::FC) {
-          EncodeBias(cache->bias,node,input_levels_[i]);cache->has_bias=true;
-        }
-        resident_[i]=std::move(cache);
+        Synchronized([&]{resident_[i]=std::make_unique<DecomposedLinear>(context_,node,input_shapes_[i],model_,input_levels_[i],o_.slots,o_.range);});
       }
     }
     keys_locked_=true;
   }
-  void EncodeBias(Pt& bias,const Node& node,int level) {
-    timing.Gpu(InferencePhase::WeightPrepare,[&]{auto values=LinearBias(node,model_,o_.slots,o_.range);
-      context_->encoder_.Encode(bias,level-1,context_->param_.GetScale(level-1),Message(values.begin(),values.end()));});
-  }
   void Linear(Ct& output,const Ct& input,const Tensor& shape,const Node& node,size_t index) {
     const int level=context_->param_.NPToLevel(input.GetNP());Require(level>0,"insufficient level before "+node.name);
-    bool initialized=false;
-    auto evaluate=[&](resnet::PackedLinear& op) {
+    auto evaluate=[&](DecomposedLinear& op,Ct& result,bool accumulate) {
       EvkRequest request;op.AddRequiredRotations(request);Keys(request);
       Evaluate(InferencePhase::Linear,[&]{Ct partial;op.Evaluate(partial,input,client_->GetEvkMap());
-        if(initialized)context_->Add(output,output,partial);else {output=std::move(partial);initialized=true;}});
+        if(accumulate)context_->Add(result,result,partial);else context_->Copy(result,partial);});
     };
     if(preencoded) {
       Require(index<resident_.size()&&bool(resident_[index]),"missing preencoded CNN layer");
-      for(const auto& op:resident_[index]->chunks)evaluate(*op);
-      if(resident_[index]->has_bias)Evaluate(InferencePhase::Linear,[&]{context_->Add(output,output,resident_[index]->bias);});
+      evaluate(*resident_[index],output,false);
     } else {
-      VisitChunks(shape,node,level,true,[&](std::unique_ptr<resnet::PackedLinear> op){evaluate(*op);});
-      if(node.operation==Operation::Conv||node.operation==Operation::FC) {
-        Pt bias;EncodeBias(bias,node,level);Evaluate(InferencePhase::Linear,[&]{context_->Add(output,output,bias);});
+      LinearPlan plan(node,shape,o_.slots);
+      for(int first=0;first<plan.parts;first+=plan.ChunkParts()) {
+        std::unique_ptr<DecomposedLinear> op;
+        timing.Gpu(InferencePhase::WeightPrepare,[&]{op=std::make_unique<DecomposedLinear>(context_,node,shape,model_,level,o_.slots,o_.range,true,first,plan.ChunkParts());});
+        evaluate(*op,output,first!=0);
       }
     }
   }
@@ -220,7 +173,7 @@ class Runner {
     timing.Cpu(InferencePhase::Input,[&]{states[0]=std::make_shared<State>(input,input);});max_error=0;max_bound=0;
     if(context_) {
       timing.Gpu(InferencePhase::Input,[&]{auto packed=cnn::Pack(input,o_.slots,o_.range);Pt pt;
-        context_->encoder_.Encode(pt,2,context_->param_.GetScale(2),Message(packed.begin(),packed.end()));client_->Encrypt(states[0]->ciphertext,pt);});
+        context_->encoder_.Encode(pt,3,context_->param_.GetScale(3),Message(packed.begin(),packed.end()));client_->Encrypt(states[0]->ciphertext,pt);});
       Check(*states[0],"input");
     }
     for(size_t i=0;i<count;++i) {
@@ -279,7 +232,7 @@ class Runner {
   size_t estimated_bytes_=0,model_rotations_=0,boot_rotations_=0;
   std::vector<Tensor> input_shapes_;
   std::vector<int> input_levels_;
-  std::vector<std::unique_ptr<LinearCache>> resident_;
+  std::vector<std::unique_ptr<DecomposedLinear>> resident_;
 };
 }  // namespace
 
@@ -293,7 +246,7 @@ int main(int argc,char** argv) {
     if(options.mode=="full") {
       Encoder<Word>::SetGpuOnlyEncoding(true);
       BootConfig config;config.ring_dimension=1<<options.log_degree;config.slot_count=options.slots;
-      config.multiplicative_depth=8;config.normal_scale_bits=options.scale_bits;config.boot_scale_bits=58;
+      config.multiplicative_depth=9;config.normal_scale_bits=options.scale_bits;config.boot_scale_bits=58;
       config.first_modulus_bits=options.scale_bits==40?50:56;config.auxiliary_modulus_bits=options.scale_bits==40?341:403;
       config.num_stc_levels=options.scale_bits==40?4:3;
       Synchronized([&]{auto resolved=ResolveBootConfig<Word>(config);param=NewParametersFromLiteral(resolved.parameters);
@@ -316,8 +269,7 @@ int main(int argc,char** argv) {
       } else std::cout<<"Parameters\n  Model: "<<model.family<<"\n  Ring dimension: "<<param->degree_
         <<"\n  Slots: "<<options.slots<<"\n  Word bits: 32\n  Normal / Boot scale bits: "<<options.scale_bits
         <<" / 58\n  Q / P primes: "<<param->GetMaxNumQ()<<" / "<<param->alpha_
-        <<"\n  ReLU range: "<<options.range<<"\n  Channel tile / diagonal chunk / baby step: "
-        <<options.channel_tile<<" / "<<options.diagonal_chunk<<" / "<<options.baby_step
+        <<"\n  ReLU range: "<<options.range<<"\n  Linear evaluation: repeated-input decomposition, shared gather masks"
         <<"\n  Weights: "<<options.weights<<"\n  CIFAR: "<<options.cifar
         <<"\n  Start / count: "<<options.start<<" / "<<options.count<<"\n  Mode: "<<options.mode
         <<"\n  Requested encoding: "<<options.run.encoding<<"\n"<<std::flush;
@@ -329,6 +281,8 @@ int main(int argc,char** argv) {
       if(!options.run.Json())std::cout<<"Preparing Boot resources...\n"<<std::flush;
       report.PrepareBoot(Sync,[&]{runner.Prepare();});
       runner.PrepareWeights();
+      size_t free=0,total=0;Require(cudaMemGetInfo(&free,&total)==cudaSuccess,"prepared memory query failed");
+      example::PrintPreparedMemory(options.run,total-free);
     }
     resnet::Model normalization{};normalization.mean=model.mean;normalization.stdev=model.stdev;
     for(int image=options.start;image<options.start+options.count;++image) {

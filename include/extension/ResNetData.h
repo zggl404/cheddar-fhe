@@ -105,13 +105,17 @@ inline Tensor ReadCifar(const std::string& path, int image, const Model& model, 
       x.values[c*1024+i] = (record[1+c*1024+i]/255.0-model.mean[c])/model.stdev[c];
   return x;
 }
-inline std::vector<double> Pack(const Tensor& x, double divisor = kRange) {
-  std::vector<double> result(kSlots);
+inline int PackedSlots(const Tensor& x) {
+  int channels=1;while(channels<x.channels)channels*=2;
+  return channels*x.width*x.width;
+}
+inline std::vector<double> Pack(const Tensor& x, double divisor = kRange,int slots=kSlots) {
+  std::vector<double> result(slots);
   for (int c=0; c<x.channels; ++c)
     for (int y=0; y<x.width; ++y)
       for (int z=0; z<x.width; ++z) {
         int slot=x.Slot(c,y,z);
-        Require(slot < kSlots, "tensor exceeds slot capacity");
+        Require(slot < slots, "tensor exceeds slot capacity");
         result[slot]=x.values[x.Flat(c,y,z)]/divisor;
       }
   return result;

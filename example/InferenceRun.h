@@ -97,6 +97,14 @@ inline void PrintInference(const std::string& model,int image,int label,int pred
 inline bool UsePreencoding(const RunOptions& options,size_t estimated,size_t available) {
   return options.encoding=="pre"||(options.encoding=="auto"&&estimated<=available);
 }
+inline void PrintPreparedMemory(const RunOptions& options,size_t bytes) {
+  if(options.Json())std::cout<<"PREPARED_MEMORY {\"resident_gpu_bytes\":"<<bytes<<"}\n"<<std::flush;
+  else {
+    std::ostringstream out;out<<"  GPU memory after preparation: "<<std::fixed<<std::setprecision(2)
+                              <<bytes/1073741824.0<<" GiB\n";
+    std::cout<<out.str()<<std::flush;
+  }
+}
 inline void PrintEncoding(const RunOptions& options,bool pre,size_t estimated,size_t available,
                           size_t model_rotations,size_t boot_rotations) {
   if(options.Json()) {

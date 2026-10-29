@@ -40,7 +40,10 @@ def reference(source, cifar, start, count):
                                              attrs.get('pads',[0]*4)[:2],bool(attrs.get('ceil_mode',0)),bool(attrs.get('count_include_pad',0)))
                 elif op=='GlobalAveragePool':out=inputs[0].mean(dim=(2,3),keepdim=True)
                 elif op=='Concat':out=torch.cat(inputs,dim=attrs['axis'])
-                elif op=='Reshape':out=inputs[0].reshape(tuple(int(x) for x in arrays[node.input[1]].reshape(-1)))
+                elif op=='Add':out=inputs[0]+inputs[1]
+                elif op=='Flatten':out=torch.flatten(inputs[0],start_dim=attrs.get('axis',1))
+                elif op=='Constant':out=torch.from_numpy(numpy_helper.to_array(attrs['value']).copy())
+                elif op=='Reshape':out=inputs[0].reshape(tuple(int(x) for x in inputs[1].reshape(-1)))
                 elif op=='Gemm':
                     a=inputs[0].T if attrs.get('transA',0) else inputs[0]
                     b=inputs[1].T if attrs.get('transB',0) else inputs[1]

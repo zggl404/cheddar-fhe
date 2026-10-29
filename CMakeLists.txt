@@ -87,6 +87,7 @@ if(ENABLE_EXTENSION)
     src/extension/StripedMatrix.cpp
     src/extension/ResNetOps.cpp
     src/extension/CnnOps.cpp
+    src/extension/CnnDecomposed.cpp
   )
 endif()
 

@@ -13,13 +13,18 @@ using Ct = Ciphertext<Word>;
 using Pt = Plaintext<Word>;
 using Boot = BootContext<Word>;
 using Diagonals = std::map<int, Message>;
+class ConvBN;
 
 // Prepared affine transform. All plaintexts are GPU encoded in the constructor.
 class PackedLinear {
  public:
   PackedLinear(std::shared_ptr<Boot> context, Diagonals diagonals,
                const std::vector<double>& bias, int input_level, int baby_step,
-               std::vector<std::pair<int,int>> input_traces = {},bool encode=true);
+               std::vector<std::pair<int,int>> input_traces = {},bool encode=true,
+               int output_slots=0);
+  PackedLinear(std::shared_ptr<Boot> context,const Tensor& input,const Weight& weight,
+               const Weight& bias,int stride,double range,bool encode);
+  ~PackedLinear();
   void AddRequiredRotations(EvkRequest& req) const;
   void Evaluate(Ct& output, const Ct& input, const EvkMap<Word>& keys) const;
   size_t NumDiagonals() const { return num_diagonals_; }
@@ -28,11 +33,13 @@ class PackedLinear {
   std::shared_ptr<Boot> context_;
   int level_;
   int slots_;
+  int output_slots_;
   size_t num_diagonals_;
   size_t estimated_bytes_=0;
   EvkRequest rotations_;
   std::vector<std::pair<int,int>> input_traces_;
   std::unique_ptr<HoistHandler<Word>> linear_;
+  std::unique_ptr<ConvBN> convolution_;
   Pt bias_;
 };
 
@@ -56,5 +63,6 @@ class EvalReLU {
   std::vector<EvalPoly<Word>> polynomials_;
   Constant<Word> half_;
   uint64_t boot_count_ = 0;
+  int output_level_=2;
 };
 }  // namespace cheddar::resnet

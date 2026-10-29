@@ -5,7 +5,7 @@ API. It does not invoke or link a FHE compiler, and does not use the AE binary
 libraries. Parameters are initialized with the existing C++
 `BootConfig -> ResolveBootConfig<uint32_t> -> NewParametersFromLiteral` API.
 `ResNetConfig()` in `ResNetCifar.cpp` defaults to the AE40-like profile used
-for the RTX 5090 measurements: N=65536, 16384 slots, normal/Boot scale targets
+for the RTX 5090 measurements: N=65536, 16384 Boot slots, normal/Boot scale targets
 40/58 bits, short modulus target 50 bits, P budget 341 bits, CtS/StC 4/4,
 and log message ratio 5. `multiplicative_depth=8` means the Boot output level.
 StC starts at level 12, also the legacy `default_encryption_level`; the maximum
@@ -65,12 +65,13 @@ or `3` chooses a projection block with deterministic synthetic input.
 For timing, image 0 can serve as warmup and images 1–10 as measured samples;
 the executable reports every image, so exclude the warmup explicitly.
 
-`--baby-step 0` (the default) selects the measured per-layer BSGS policy:
-64 for stage 1 and dense stage 3 convolutions, 128 for stage 2 and the stage 3
-projection, and 16 for pooling/classification. An explicit power of two in
-[1,128] overrides that policy. All model layers and Boot calls use 16384
-slots throughout, including after downsampling. There is no compact-slot
-mode in this runner. These choices do not change the selected modulus chain.
+Convolution uses the AE-style repeated-input decomposition, shared spatial
+baby-step rotations, channel Trace reductions, and output-gather masks.
+The fixed spatial split is determined by the input packing. `--baby-step`
+controls only pooling/classification (default 16); no tuning is needed for
+ordinary model runs. Boot is prepared for 16384 slots. Feature ciphertexts
+use 4096 input slots, then 16384/8192/4096 slots across the three stages,
+with 64 slots after pooling and classification.
 
 ## Numerical conventions
 
@@ -80,15 +81,19 @@ before constructing its context. Per-operation audits require zero CPU encode
 attempts and zero encoding inside the timed ciphertext evaluation.
 
 The spatial layout interleaves 1, 4, or 16 channels in each 32x32 canvas,
-matching the AE stage width/pack convention. Every ciphertext has 16,384
-configured slots throughout the model. Unused slots are zero and all 16,384
-slots are included in numerical checks. Sparse matrix
-diagonals express convolution, padding, stride, and layout conversion; a
-prepared HoistHandler evaluates each affine layer and consumes one level.
-Conv inputs are at level 2 and outputs at level 1. ReLU returns level 2;
+matching the AE stage width/pack convention. Each padded feature vector is
+repeated across the physical N/2 slots. Input repetitions calculate multiple
+output channels in parallel. A weight transform consumes level 2 to 1,
+Trace sums the input channels, and gather masks consume level 1 to 0.
+Projection weights are encoded only in Q; ordinary convolution weights and
+gather masks are encoded in QP. Convolutions return level 0. Identity skips
+are aligned to level 0 before addition. ReLU returns level 2;
 pooling maps level 2 to 1 and the classifier maps level 1 to 0.
 Average pooling first sums the spatial grid with six rotations, then uses a
-16-diagonal gather with the factor 1/64. Its rescale remains at level 2 to 1.
+16-diagonal gather with the factor 1/64 and a final repetition Trace. Its
+rescale remains at level 2 to 1. Classification uses 64 cyclic diagonals.
+Checks cover every decoded slot in the padded feature vector, including
+zero padding. No decrypted value is used to repair or repack ciphertexts.
 
 ReLU uses an explicitly documented composite sign approximation with degrees
 15/15/27. The AE artifact does not provide its complete ReLU implementation;
@@ -134,3 +139,6 @@ Use the [main guide](../README.md) to export and run models.
 All runners and scripts use timing schema_version=2: three additive run
 categories and exclusive inference components. See the
 [shared timing and validation specification](../docs/inference.md).
+The AE-style convolution implementation has passed complete ResNet20 ciphertext
+inference on RTX 5090; see the [validation record](../docs/resnet-ae-validation.md)
+for memory, timing, numerical errors, and the limits of this verification.
