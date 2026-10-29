@@ -40,9 +40,16 @@ def main():
     parser.add_argument('--count', type=int, default=1)
     parser.add_argument('--warmup', type=int, default=0, help='included in count and end-to-end time')
     parser.add_argument('--encode-mode', choices=('auto', 'pre', 'stream'), default='auto')
+    parser.add_argument('--key-mode', choices=('generate', 'save', 'load'), default='generate')
+    parser.add_argument('--key-dir', type=Path)
     parser.add_argument('--ks-profile', choices=('off', 'on'), default='off')
     parser.add_argument('--log-format', choices=('human', 'json'), default='human')
     args, options = parser.parse_known_args()
+    if args.key_mode != 'generate' and not args.key_dir:
+        parser.error('--key-mode save/load requires --key-dir')
+    if args.key_dir:
+        options += ['--key-dir', str(args.key_dir.expanduser().resolve())]
+    options += ['--key-mode', args.key_mode]
     if not 0 <= args.warmup < args.count <= 10000:
         parser.error('require 0 <= warmup < count <= 10000')
     if any(x.split('=', 1)[0] in ('--timing-file',) for x in options):

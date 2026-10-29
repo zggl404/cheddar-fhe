@@ -20,6 +20,7 @@ namespace cheddar::example {
 struct RunOptions {
   std::string format="human", encoding="auto";
   std::string timing_file;
+  std::string key_mode="generate",key_directory;
   bool verbose=false;
   bool ks_profile=false;
   bool Parse(const std::string& key,const std::string& value) {
@@ -32,7 +33,11 @@ struct RunOptions {
     } else if(key=="--ks-profile") {
       if(value!="off"&&value!="on")throw std::runtime_error("ks-profile must be off|on");
       ks_profile=value=="on";
-    } else if(key=="--timing-file")timing_file=value;
+    } else if(key=="--key-mode") {
+      if(value!="generate"&&value!="save"&&value!="load")throw std::runtime_error("key-mode must be generate|save|load");
+      key_mode=value;
+    } else if(key=="--key-dir")key_directory=value;
+    else if(key=="--timing-file")timing_file=value;
     else if(key=="--verbose") {
       if(value!="0"&&value!="1")throw std::runtime_error("verbose must be 0 or 1");
       verbose=value=="1";
@@ -100,6 +105,14 @@ inline void PrintInference(const std::string& model,int image,int label,int pred
 
 inline bool UsePreencoding(const RunOptions& options,size_t estimated,size_t available) {
   return options.encoding=="pre"||(options.encoding=="auto"&&estimated<=available);
+}
+template<class Client>void PrintKeyResources(const RunOptions& options,const Client& client) {
+  if(options.Json())std::cout<<"KEY_RESOURCES {\"mode\":\""<<options.key_mode<<"\",\"identity\":\""<<client.KeyIdentity()
+    <<"\",\"key_count\":"<<client.KeyCount()<<",\"keys_generated\":"<<client.KeysGenerated()
+    <<",\"keys_loaded\":"<<client.KeysLoaded()<<",\"bytes_loaded\":"<<client.KeyBytesLoaded()
+    <<",\"bytes_saved\":"<<client.KeyBytesSaved()<<"}\n"<<std::flush;
+  else std::cout<<"\nKeys\n  Mode: "<<options.key_mode<<"\n  Evaluation keys: "<<client.KeyCount()
+    <<"\n  Generated / loaded: "<<client.KeysGenerated()<<" / "<<client.KeysLoaded()<<"\n"<<std::flush;
 }
 inline void PrintPreparedMemory(const RunOptions& options,size_t bytes) {
   if(options.Json())std::cout<<"PREPARED_MEMORY {\"resident_gpu_bytes\":"<<bytes<<"}\n"<<std::flush;

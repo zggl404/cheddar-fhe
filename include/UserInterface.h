@@ -1,5 +1,8 @@
 #pragma once
 
+#include <map>
+#include <string>
+
 /**
  * @brief The code inside this file is for test purposes and are NOT secure
  * implementations.
@@ -37,8 +40,11 @@ class UserInterface {
    *
    * @param context CKKS context (can be a BootContext or a Context)
    * @param defer_boot_keys Prepare dense/sparse switch keys later with PrepareBootKeys().
+   * @param key_mode generate, save, or load (load never generates new secrets/keys).
+   * @param key_directory Complete key bundle directory for save/load.
    */
-  explicit UserInterface(ContextPtr<word> context,bool defer_boot_keys=false);
+  explicit UserInterface(ContextPtr<word> context,bool defer_boot_keys=false,
+                         std::string key_mode="generate",std::string key_directory="");
 
   /**
    * @brief Encrypt a plaintext into a ciphertext.
@@ -86,8 +92,19 @@ class UserInterface {
    */
   void PrepareRotationKey(const EvkRequest &evk_request);
 
-  // Idempotent: generate dense/sparse Boot switch keys when preparation is staged.
+  // Idempotent: generate/load dense/sparse Boot keys when preparation is staged.
   void PrepareBootKeys();
+
+  // Save is explicit and occurs after the complete request set is prepared.
+  // Load mode restores secrets/basic keys here, rotations/Boot keys in their
+  // corresponding preparation calls; it never falls back to generation.
+  void SaveKeys();
+  uint64_t KeysGenerated() const {return keys_generated_;}
+  uint64_t KeysLoaded() const {return keys_loaded_;}
+  uint64_t KeyBytesLoaded() const {return key_bytes_loaded_;}
+  uint64_t KeyBytesSaved() const {return key_bytes_saved_;}
+  size_t KeyCount() const {return evk_map_.size();}
+  const std::string& KeyIdentity() const {return key_identity_;}
 
  private:
   static inline constexpr double kErrorStandardDeviation = 3.2;
@@ -101,6 +118,13 @@ class UserInterface {
   bool boot_keys_prepared_=false;
 
   std::vector<word> all_primes_;
+  std::string key_mode_,key_directory_,key_identity_;
+  std::map<int,std::pair<NPInfo,int>> stored_keys_;
+  bool stored_boot_keys_=false;
+  uint64_t keys_generated_=0,keys_loaded_=0,key_bytes_loaded_=0,key_bytes_saved_=0;
+  std::string KeyParameters() const;
+  void InitializeKeyStore();
+  void LoadEvaluationKey(int id,const NPInfo& required);
 
   DvView<word> MainSecretView(int front_ignore = 0);
   DvConstView<word> MainSecretConstView(int front_ignore = 0) const;

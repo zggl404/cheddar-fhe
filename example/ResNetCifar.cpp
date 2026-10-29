@@ -388,7 +388,7 @@ int main(int argc,char** argv) {
       param=NewParametersFromLiteral(resolved.parameters);
       context=Boot::Create(*param,resolved.boot);
       MultiLevelCiphertext<Word>::StaticInit(*param,context->encoder_);
-      client=std::make_unique<UserInterface<Word>>(context,true);
+      client=std::make_unique<UserInterface<Word>>(context,true,options.run.key_mode,options.run.key_directory);
     });
     if(options.run.Json())PrintParameters(config,*param,context->boot_param_);
     else std::cout<<"Parameters\n  Model: ResNet"<<model.depth<<"\n  Ring dimension: "<<param->degree_<<"\n  Slots: "<<kSlots
@@ -403,6 +403,7 @@ int main(int argc,char** argv) {
       if(!options.run.Json())std::cout<<"Preparing Boot resources...\n"<<std::flush;
       report.PrepareBoot(Sync,[&]{runner.PrepareBoot();});
     }
+    client->SaveKeys();example::PrintKeyResources(options.run,*client);
     if(options.mode=="full") {
       runner.PrepareWeights();size_t free=0,total=0;
       Require(cudaMemGetInfo(&free,&total)==cudaSuccess,"prepared memory query failed");

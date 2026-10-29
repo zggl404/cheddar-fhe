@@ -250,7 +250,7 @@ int main(int argc,char** argv) {
       config.first_modulus_bits=options.scale_bits==40?50:56;config.auxiliary_modulus_bits=options.scale_bits==40?341:403;
       config.num_stc_levels=options.scale_bits==40?4:3;
       Synchronized([&]{auto resolved=ResolveBootConfig<Word>(config);param=NewParametersFromLiteral(resolved.parameters);
-        context=Boot::Create(*param,resolved.boot);MultiLevelCiphertext<Word>::StaticInit(*param,context->encoder_);client=std::make_unique<UserInterface<Word>>(context,true);});
+        context=Boot::Create(*param,resolved.boot);MultiLevelCiphertext<Word>::StaticInit(*param,context->encoder_);client=std::make_unique<UserInterface<Word>>(context,true,options.run.key_mode,options.run.key_directory);});
       if(options.run.Json()) {
       std::cout<<"PARAM {\"ring_dimension\":"<<param->degree_<<",\"slots\":"<<options.slots
                <<",\"word_bits\":32,\"normal_scale_bits\":"<<options.scale_bits
@@ -281,6 +281,7 @@ int main(int argc,char** argv) {
       runner.PrepareModel();
       if(!options.run.Json())std::cout<<"Preparing Boot resources...\n"<<std::flush;
       report.PrepareBoot(Sync,[&]{runner.Prepare();});
+      client->SaveKeys();example::PrintKeyResources(options.run,*client);
       runner.PrepareWeights();
       size_t free=0,total=0;Require(cudaMemGetInfo(&free,&total)==cudaSuccess,"prepared memory query failed");
       example::PrintPreparedMemory(options.run,total-free);

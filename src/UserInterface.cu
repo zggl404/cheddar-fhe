@@ -110,8 +110,9 @@ __global__ void AddEvkPart(word *dst, const word *primes,
 }  // namespace kernel
 
 template <typename word>
-UserInterface<word>::UserInterface(ContextPtr<word> context,bool defer_boot_keys)
-    : context_{std::move(context)} {
+UserInterface<word>::UserInterface(ContextPtr<word> context,bool defer_boot_keys,
+                                  std::string key_mode,std::string key_directory)
+    : context_{std::move(context)},key_mode_(std::move(key_mode)),key_directory_(std::move(key_directory)) {
   const auto &param = context_->param_;
   all_primes_ =
       param.GetPrimeVector(param.LevelToNP(param.max_level_, param.alpha_));
@@ -124,7 +125,8 @@ UserInterface<word>::UserInterface(ContextPtr<word> context,bool defer_boot_keys
   Warn(
       "UserInterface is for testing purposes only. "
       "Do not use in production.");
-  PrepareSecrets();
+  InitializeKeyStore();
+  if(key_mode_!="load")PrepareSecrets();
   PrepareBasicEvks();
   if(!defer_boot_keys)PrepareBootKeys();
 }
@@ -296,6 +298,7 @@ void UserInterface<word>::PrepareRotationKey(int rot_idx, int max_level) {
     }
   }
 
+  if(key_mode_=="load") {LoadEvaluationKey(rot_idx,np);return;}
   Dv s_rot_dv(np.GetNumTotal() * degree);
   int aux_size = alpha * degree;
   std::vector<DvView<word>> s_rot{s_rot_dv.View(aux_size)};
@@ -323,6 +326,11 @@ void UserInterface<word>::PrepareBasicEvks() {
   int degree = context_->param_.degree_;
   NPInfo np = GetNPForEvk(context_->param_.max_level_);
 
+  if(key_mode_=="load") {
+    LoadEvaluationKey(EvkMap<word>::kMultiplicationKeyIndex,np);
+    LoadEvaluationKey(EvkMap<word>::kConjugationKeyIndex,np);return;
+  }
+
   // Multiplication key
   Dv s_squared(np.GetNumTotal() * degree);
   std::vector<DvView<word>> s_squared_view{s_squared.View(alpha * degree)};
@@ -345,6 +353,14 @@ void UserInterface<word>::PrepareBootKeys() {
   if(boot_keys_prepared_)return;
   const int L=context_->param_.L_,alpha=context_->param_.alpha_;
   const auto np=GetNPForEvk(context_->param_.max_level_);
+  if(key_mode_=="load") {
+    AssertTrue(stored_boot_keys_,"KMS: bundle has no prepared Boot keys");
+    if(context_->param_.IsUsingSparseSecretEncapsulation()) {
+      LoadEvaluationKey(EvkMap<word>::kDenseToSparseKeyIndex,GetNPForEvk(-1));
+      LoadEvaluationKey(EvkMap<word>::kSparseToDenseKeyIndex,np);
+    }
+    boot_keys_prepared_=true;return;
+  }
   if (context_->param_.IsUsingSparseSecretEncapsulation()) {
     // Dense to Sparse key
     NPInfo dts_np = GetNPForEvk(-1);
@@ -375,6 +391,8 @@ template <typename word>
 void UserInterface<word>::PrepareEvk(int key_idx, const NPInfo &np,
                                      const Dv &encryption_secret,
                                      const Dv &target_secret) {
+  AssertTrue(key_mode_!="load","KMS: generation forbidden in load mode");
+  ++keys_generated_;
   int degree = context_->param_.degree_;
   // Beware that alpha != np.num_aux_
   int alpha = context_->param_.alpha_;

@@ -67,6 +67,7 @@ set(CKKS_GPU_SOURCES
   src/core/NTT.cu
   src/core/Parameter.cu
   src/UserInterface.cu
+  src/KeyStore.cu
 )
 if(USE_GMP)
   list(APPEND CKKS_GPU_SOURCES src/core/BigInt_gmp.cpp)

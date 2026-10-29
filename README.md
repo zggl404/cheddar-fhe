@@ -108,6 +108,9 @@ python scripts/run_inference.py --model vgg11 --cifar "$CIFAR_BIN" --count 6 --w
 需要区分 Keyswitch、Non-keyswitch 和 Hybrid 时间时，加 `--ks-profile on`。
 默认关闭，开启会增加同步测量开销，边界与示例见[计时说明](docs/keyswitch-profiling.md)。
 
+密钥可通过 `--key-mode save|load --key-dir /data/keys/模型名` 预生成保存并在后续运行加载，
+默认仍为 `generate`，详见[KMS 使用说明](docs/kms.md)。
+
 默认分行显示参数、资源模式、每个类别的精确 ReLU 明文输出、FHE 解密输出，
 以及最大/平均绝对误差。逐层诊断默认收起，数值校验仍然执行；失败会返回非零状态。
 

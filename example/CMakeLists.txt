@@ -1,3 +1,5 @@
+add_executable(key_store_test ../tests/key_store_test.cpp)
+target_link_libraries(key_store_test PRIVATE cheddar)
 add_executable(inference_run_test ../tests/inference_run_test.cpp)
 if(BUILD_RESNET_EXAMPLE)
   add_executable(resnet_conv_plan_test ../tests/resnet_conv_plan_test.cpp)
