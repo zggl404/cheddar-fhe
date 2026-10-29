@@ -18,15 +18,18 @@ class PackedLinear {
  public:
   PackedLinear(std::shared_ptr<Boot> context, Diagonals diagonals,
                const std::vector<double>& bias, int input_level, int baby_step,
-               std::vector<std::pair<int,int>> input_traces = {});
+               std::vector<std::pair<int,int>> input_traces = {},bool encode=true);
   void AddRequiredRotations(EvkRequest& req) const;
   void Evaluate(Ct& output, const Ct& input, const EvkMap<Word>& keys) const;
   size_t NumDiagonals() const { return num_diagonals_; }
+  size_t EstimatedBytes() const { return estimated_bytes_; }
  private:
   std::shared_ptr<Boot> context_;
   int level_;
   int slots_;
   size_t num_diagonals_;
+  size_t estimated_bytes_=0;
+  EvkRequest rotations_;
   std::vector<std::pair<int,int>> input_traces_;
   std::unique_ptr<HoistHandler<Word>> linear_;
   Pt bias_;
@@ -34,11 +37,11 @@ class PackedLinear {
 
 std::unique_ptr<PackedLinear> MakeConv(std::shared_ptr<Boot> context,
     const Tensor& input, const Weight& weight, const Weight& bias, int stride,
-    int baby_step = 0, double range = kRange);
+    int baby_step = 0, double range = kRange,bool encode=true);
 std::unique_ptr<PackedLinear> MakePool(std::shared_ptr<Boot> context,
-    const Tensor& input, int baby_step = 0);
+    const Tensor& input, int baby_step = 0,bool encode=true);
 std::unique_ptr<PackedLinear> MakeClassifier(std::shared_ptr<Boot> context,
-    const Weight& weight, const Weight& bias, int baby_step = 0, double range = kRange);
+    const Weight& weight, const Weight& bias, int baby_step = 0, double range = kRange,bool encode=true);
 
 class EvalReLU {
  public:

@@ -118,16 +118,13 @@ export FHE_CIFAR_BIN="/data/cifar-10-batches-bin/test_batch.bin"
 export FHE_WEIGHTS_DIR="$PWD/models"
 export FHE_BUILD_DIR="$PWD/build"
 export FHE_RUN_DIR="$PWD/validation/manual-01"
-export FHE_CNN_TILE=16
+export FHE_CNN_TILE=512
+export FHE_LOG_FORMAT=human
 
 mkdir -p "$FHE_WEIGHTS_DIR" "$FHE_RUN_DIR"
 ```
 
-`FHE_CNN_TILE=16` 是较小的 CPU 权重准备块。之前的大内存服务器采用 512；
-CPU 内存充足且希望复现同一分块设置时，可在运行前设置 `export FHE_CNN_TILE=512`。
-GPU 对角线块在下文固定为 64。更改分块设置会影响准备时间、内存和 online 时间，应记录实际参数。
-
-检查输入文件是否齐全：
+默认 FHE_CNN_TILE=512、diagonal chunk=64、baby step=128，采用当前已验证的优化分块；\n编码默认 auto，显存预算足够时整网预编码，不足时实时编码。\nCPU 内存不足时将 FHE_CNN_TILE 降为 16 或 8，并记录新配置后重测。\n\n检查输入文件是否齐全：
 
 ```bash
 python - <<'PY'
@@ -179,7 +176,7 @@ RTX 5090 使用 `120`。其他 GPU 按实际型号调整，不能把库的通用
 
 | GPU | `CMAKE_CUDA_ARCHITECTURES` |
 |---|---:|
-| RTX 5090 | 120 |
+| RTX 5090 / RTX PRO 6000 Blackwell | 120 |
 | RTX 4090 | 89 |
 | RTX 3090 | 86 |
 | H100 / H200 | 90 |
@@ -281,29 +278,29 @@ set -o pipefail
 (
 set -euo pipefail
 
-"$FHE_BUILD_DIR/example/resnet_cifar" \
+python scripts/run_inference.py --binary "$FHE_BUILD_DIR/example/resnet_cifar" \
   --weights "$FHE_WEIGHTS_DIR/resnet20.bin" --cifar "$FHE_CIFAR_BIN" \
-  --mode full --start 0 --count 1 --scale-bits 40 --relu-range 10 \
+  --mode full --log-format "$FHE_LOG_FORMAT" --encode-mode auto --start 0 --count 1 --scale-bits 40 --relu-range 10 \
   2>&1 | tee "$FHE_RUN_DIR/resnet20.log"
 
-"$FHE_BUILD_DIR/example/resnet_cifar" \
+python scripts/run_inference.py --binary "$FHE_BUILD_DIR/example/resnet_cifar" \
   --weights "$FHE_WEIGHTS_DIR/resnet32.bin" --cifar "$FHE_CIFAR_BIN" \
-  --mode full --start 0 --count 1 --scale-bits 40 --relu-range 10 \
+  --mode full --log-format "$FHE_LOG_FORMAT" --encode-mode auto --start 0 --count 1 --scale-bits 40 --relu-range 10 \
   2>&1 | tee "$FHE_RUN_DIR/resnet32.log"
 
-"$FHE_BUILD_DIR/example/resnet_cifar" \
+python scripts/run_inference.py --binary "$FHE_BUILD_DIR/example/resnet_cifar" \
   --weights "$FHE_WEIGHTS_DIR/resnet44.bin" --cifar "$FHE_CIFAR_BIN" \
-  --mode full --start 0 --count 1 --scale-bits 40 --relu-range 10 \
+  --mode full --log-format "$FHE_LOG_FORMAT" --encode-mode auto --start 0 --count 1 --scale-bits 40 --relu-range 10 \
   2>&1 | tee "$FHE_RUN_DIR/resnet44.log"
 
-"$FHE_BUILD_DIR/example/resnet_cifar" \
+python scripts/run_inference.py --binary "$FHE_BUILD_DIR/example/resnet_cifar" \
   --weights "$FHE_WEIGHTS_DIR/resnet56.bin" --cifar "$FHE_CIFAR_BIN" \
-  --mode full --start 0 --count 1 --scale-bits 40 --relu-range 12 \
+  --mode full --log-format "$FHE_LOG_FORMAT" --encode-mode auto --start 0 --count 1 --scale-bits 40 --relu-range 12 \
   2>&1 | tee "$FHE_RUN_DIR/resnet56.log"
 
-"$FHE_BUILD_DIR/example/resnet_cifar" \
+python scripts/run_inference.py --binary "$FHE_BUILD_DIR/example/resnet_cifar" \
   --weights "$FHE_WEIGHTS_DIR/resnet110.bin" --cifar "$FHE_CIFAR_BIN" \
-  --mode full --start 0 --count 1 --scale-bits 40 --relu-range 24 \
+  --mode full --log-format "$FHE_LOG_FORMAT" --encode-mode auto --start 0 --count 1 --scale-bits 40 --relu-range 24 \
   2>&1 | tee "$FHE_RUN_DIR/resnet110.log"
 )
 ```
@@ -319,7 +316,7 @@ ResNet 固定使用 N=65536（2^16）、16384 槽、32 位后端，normal/Boot s
 更换权重后可先检查明文路径：
 
 ```bash
-"$FHE_BUILD_DIR/example/resnet_cifar" \
+python scripts/run_inference.py --binary "$FHE_BUILD_DIR/example/resnet_cifar" \
   --weights "$FHE_WEIGHTS_DIR/resnet110.bin" --cifar "$FHE_CIFAR_BIN" \
   --mode reference --start 0 --count 6 --relu-range 24
 ```
@@ -337,37 +334,37 @@ ResNet 固定使用 N=65536（2^16）、16384 槽、32 位后端，normal/Boot s
 (
 set -euo pipefail
 
-"$FHE_BUILD_DIR/example/cnn_cifar" \
+python scripts/run_inference.py --binary "$FHE_BUILD_DIR/example/cnn_cifar" \
   --weights "$FHE_WEIGHTS_DIR/vgg11.bin" --cifar "$FHE_CIFAR_BIN" \
-  --mode full --start 0 --count 1 --scale-bits 40 --relu-range 10 \
+  --mode full --log-format "$FHE_LOG_FORMAT" --encode-mode auto --start 0 --count 1 --scale-bits 40 --relu-range 10 \
   --log-degree 17 --slots 65536 --channel-tile "$FHE_CNN_TILE" \
   --diagonal-chunk 64 --baby-step 128 \
   2>&1 | tee "$FHE_RUN_DIR/vgg11.log"
 
-"$FHE_BUILD_DIR/example/cnn_cifar" \
+python scripts/run_inference.py --binary "$FHE_BUILD_DIR/example/cnn_cifar" \
   --weights "$FHE_WEIGHTS_DIR/vgg16.bin" --cifar "$FHE_CIFAR_BIN" \
-  --mode full --start 0 --count 1 --scale-bits 40 --relu-range 10 \
+  --mode full --log-format "$FHE_LOG_FORMAT" --encode-mode auto --start 0 --count 1 --scale-bits 40 --relu-range 10 \
   --log-degree 17 --slots 65536 --channel-tile "$FHE_CNN_TILE" \
   --diagonal-chunk 64 --baby-step 128 \
   2>&1 | tee "$FHE_RUN_DIR/vgg16.log"
 
-"$FHE_BUILD_DIR/example/cnn_cifar" \
+python scripts/run_inference.py --binary "$FHE_BUILD_DIR/example/cnn_cifar" \
   --weights "$FHE_WEIGHTS_DIR/mobilenet.bin" --cifar "$FHE_CIFAR_BIN" \
-  --mode full --start 0 --count 1 --scale-bits 40 --relu-range 10 \
+  --mode full --log-format "$FHE_LOG_FORMAT" --encode-mode auto --start 0 --count 1 --scale-bits 40 --relu-range 10 \
   --log-degree 17 --slots 65536 --channel-tile "$FHE_CNN_TILE" \
   --diagonal-chunk 64 --baby-step 128 \
   2>&1 | tee "$FHE_RUN_DIR/mobilenet.log"
 
-"$FHE_BUILD_DIR/example/cnn_cifar" \
+python scripts/run_inference.py --binary "$FHE_BUILD_DIR/example/cnn_cifar" \
   --weights "$FHE_WEIGHTS_DIR/squeezenet.bin" --cifar "$FHE_CIFAR_BIN" \
-  --mode full --start 0 --count 1 --scale-bits 40 --relu-range 10 \
+  --mode full --log-format "$FHE_LOG_FORMAT" --encode-mode auto --start 0 --count 1 --scale-bits 40 --relu-range 10 \
   --log-degree 17 --slots 65536 --channel-tile "$FHE_CNN_TILE" \
   --diagonal-chunk 64 --baby-step 128 \
   2>&1 | tee "$FHE_RUN_DIR/squeezenet.log"
 
-"$FHE_BUILD_DIR/example/cnn_cifar" \
+python scripts/run_inference.py --binary "$FHE_BUILD_DIR/example/cnn_cifar" \
   --weights "$FHE_WEIGHTS_DIR/alexnet.bin" --cifar "$FHE_CIFAR_BIN" \
-  --mode full --start 0 --count 1 --scale-bits 40 --relu-range 10 \
+  --mode full --log-format "$FHE_LOG_FORMAT" --encode-mode auto --start 0 --count 1 --scale-bits 40 --relu-range 10 \
   --log-degree 17 --slots 65536 --channel-tile "$FHE_CNN_TILE" \
   --diagonal-chunk 64 --baby-step 128 \
   2>&1 | tee "$FHE_RUN_DIR/alexnet.log"
@@ -385,7 +382,7 @@ set -euo pipefail
 可选：先用 VGG11 的第一层检查布局与密文线性层：
 
 ```bash
-"$FHE_BUILD_DIR/example/cnn_cifar" \
+python scripts/run_inference.py --binary "$FHE_BUILD_DIR/example/cnn_cifar" \
   --weights "$FHE_WEIGHTS_DIR/vgg11.bin" --cifar "$FHE_CIFAR_BIN" \
   --mode full --stop-after 1 --count 1 --channel-tile "$FHE_CNN_TILE" \
   --diagonal-chunk 64 --baby-step 128
@@ -394,9 +391,9 @@ set -euo pipefail
 检查更大数据范围的精确 ReLU 明文激活时可以运行：
 
 ```bash
-"$FHE_BUILD_DIR/example/cnn_cifar" \
+python scripts/run_inference.py --binary "$FHE_BUILD_DIR/example/cnn_cifar" \
   --weights "$FHE_WEIGHTS_DIR/vgg11.bin" --cifar "$FHE_CIFAR_BIN" \
-  --mode calibrate --count 11 --relu-range 10
+  --mode calibrate --log-format json --count 11 --relu-range 10
 ```
 
 `calibrate` 只运行精确 ReLU 明文路径；`reference` 则还运行相同多项式的明文路径。
@@ -404,10 +401,34 @@ set -euo pipefail
 
 ## 7. 查看密文与原始明文输出的误差
 
-### 7.1 如何判断运行是否完成
+### 7.1 默认输出与编码模式
 
-完整密文推理应正常返回 0，日志末尾包含 `GPU_ONLY_PASS`，每张图片有一条 `RESULT { ... }`。
-`CHECK` 是逐层检查，`PARAM` 是实际密码参数，CNN 的 `NODE_TIMING` 是节点计时。
+第 5–6 节通过 `scripts/run_inference.py` 调用 C++，默认只显示运行参数、资源选择、
+每个类别一行的明文与 FHE 解密结果、误差以及三段时间和派生合计。
+逐层 CHECK/ACTIVATION/LINEAR/NODE_TIMING 和内部准备日志默认收起，原有校验仍然执行。
+
+| 参数 | 作用 |
+|---|---|
+| `--log-format human` | 默认：参数、资源、输出和时间分行显示 |
+| `--log-format json` | PARAM、RESOURCES、RESULT、TIMING 机器记录 |
+| `--verbose 1` | 打开逐层及内部诊断日志，默认 0 |
+| `--encode-mode auto` | 默认：保守显存预算足够时整网预编码，不够时选择 stream |
+| `--encode-mode pre` | 强制预编码全部用到的权重并驻留；不足时明确失败 |
+| `--encode-mode stream` | 先备齐所有实际用到的密钥，推理期间逐层/逐块编码权重并释放 |
+
+以下资源前置/缓存约定面向 `--mode full`；ResNet 的 conv/stem/blocks/projection 等局部模式仍是逐层调试路径。
+
+模型旋转请求先按最高所需 level 合并生成，再准备 Boot 专用切换密钥、旋转密钥和常量，
+复用已有兼容 key。这里的“全部旋转 key”指模型实际用到的集合，不枚举所有可能距离。
+推理阶段如果发现未提前准备的 key 会失败。同进程的后续图片复用密钥，
+pre 模式也复用整网权重明文。
+
+权重估算包含 RMM 固定块分配的向上取整。auto 预算使用 CUDA 空闲和 RMM CUDA 池
+尚未使用的容量，再预留 4 GiB 工作空间；固定块池中的可复用空块未全部计入预算，
+因此选择偏保守，实际分配失败仍会报告失败。不能用 ONNX 文件大小推断展开后 CKKS 权重的驻留大小。
+
+JSON 日志中每张图有一条 RESULT，成功退出有 GPU_ONLY_PASS，最后有整次运行的 TIMING。
+下面是 JSON RESULT 的主要字段；默认 human 已直接显示对应结果：
 
 `RESULT` 中的主要字段：
 
@@ -432,7 +453,16 @@ set -euo pipefail
 
 ### 7.2 直接打印明文、密文和两种误差统计
 
-以下代码读取第 5–6 节保存的日志，每张图输出两个向量、
+默认 human 已显示逐类输出、最大与平均绝对误差。使用下面的自动解析时，先选择 JSON
+并换一个日志目录，再重跑第 5–6 节中需要的命令，无需重新导出权重：
+
+```bash
+export FHE_LOG_FORMAT=json
+export FHE_RUN_DIR="$PWD/validation/json-01"
+mkdir -p "$FHE_RUN_DIR"
+```
+
+以下代码读取该 JSON 日志目录，每张图输出两个向量、
 最大绝对误差和平均绝对误差。统计基于未舍入的十个 logits：
 
 ```bash
@@ -472,17 +502,42 @@ PY
 程序输出 `PASS` 不等于 `fhe_vs_relu_logits <= 0.01`。若你的验收目标是后者，
 需要额外检查这个字段；多项式近似造成的差异也计入总误差。
 
-### 7.3 如何理解当前计时和准备策略
+### 7.3 三段时间如何与 time 端到端对应
 
-权重按层（CNN 还按对角线块）构造、GPU 编码、求值，再释放；当前没有整网权重常驻缓存。
-Boot 常量提前准备；旋转密钥根据 Boot、BSGS 和 Trace 的实际请求生成，并缓存、按需补齐，
-不枚举所有可能旋转距离。同进程后续图片复用已准备的 keys，但仍重新准备各层权重。
+最终三项互不重叠，覆盖整次进程运行；最后一行是三项相加的派生合计：
 
-`online_encode_calls=0` 只约束 `Online()` 求值区间，不表示整个网络在第一层开始前已经完成全部预编码。
-`online_ms` 包含区间内的 CPU 调用与同步开销；它也不覆盖所有图外工作，
-例如现有 ResNet 保存残差分支的 Copy 位于计时区间外。
-因此将它作为当前固定边界的算子求值时间，不把它当成完整连续主图或服务请求延迟。
-`image_wall_ms` 又包含验证用途的明文参考与解密检查，同样需要说明计时口径。
+| 控制台名称 / TIMING 字段 | 包含内容 |
+|---|---|
+| Model resources / process overhead / `model_prepare_ms` | 文件加载、参数/上下文、基础乘法与共轭密钥、模型旋转密钥、权重规划、pre 权重预编码，以及其余进程启动、收尾、资源析构和外层入口开销 |
+| Boot resources / `boot_prepare_ms` | Boot 专用稠密/稀疏切换密钥、Boot 旋转密钥、CtS/StC/EvalMod 常量与 ReLU 多项式准备 |
+| Inference stage, all images / `inference_ms` | 输入读取/编码/加密、完整 FHE 图（含残差 Copy）、明文参考、逐层解密校验及结果输出；stream 权重编码也计入此项 |
+| Sum / end-to-end wall / `total_ms` | 三项之和，是派生合计，不是第四种独立计时 |
+
+`--count 1` 时第三项对应一张图；多张图时为所有图片的阶段耗时之和。
+第三项包含校验，不声称是纯 GPU kernel 或剔除验证后的净计算时间。
+第一项采用总墙钟减去第二、三项，确保所有进程开销有归属且没有重复计时：
+
+`model_prepare_ms + boot_prepare_ms + inference_ms = total_ms`
+
+可以这样核对同一次运行：
+
+```bash
+time -p python scripts/run_inference.py \
+  --binary "$FHE_BUILD_DIR/example/resnet_cifar" \
+  --weights "$FHE_WEIGHTS_DIR/resnet20.bin" --cifar "$FHE_CIFAR_BIN" \
+  --mode full --count 1 --encode-mode auto
+```
+
+将合计毫秒除以 1000，与外部 time 的 real 对照，而不是 user/sys CPU 时间。
+Linux 外层入口从进程出生时间计时，包含 Python 自身和子进程 CUDA 库加载/退出；
+两者允许约一个系统时钟 tick、外部显示舍入及最后打印的微小差额。
+
+原生 C++ 入口也能直接运行，它的三项覆盖 main 到资源析构；
+main 前动态库加载、main 后运行时退出不在原生合计内。
+需要完整端到端口径时使用第 5–6 节的外层入口。
+
+`online_ms` 作为 JSON 诊断字段保留旧分段求值边界；它没有覆盖全部输入、校验、
+实时编码或旧区间外图操作，不能与新的第三项混称。
 
 ## 8. 可选：独立明文参考、分阶段验证与性能复测
 
@@ -527,6 +582,7 @@ python scripts/validate_cnn.py \
 ```
 
 它按每个模型的首层 → 模块 → 整网顺序验证，首个失败即停止，保留日志和退出码。
+批量脚本使用 JSON、verbose 和外层计时入口，默认 auto 选择预编码或实时编码；可用 --encode-mode 显式覆盖。
 默认覆盖五个 family；只检查一个时增加 `--families alexnet`。
 整网结果还与独立 PyTorch 参考比较，C++ 精确 ReLU logits 的一致性门槛为 `1e-7`。
 
@@ -562,6 +618,7 @@ python scripts/benchmark_cnn_online.py \
 每个模型运行图 0–5：图 0 预热，图 1–5 统计均值、中位数、最小值、最大值和原始样本。
 脚本记录源码（包括 .cuh）、二进制、共享库、模型、数据和参数哈希，以及节点拆分。
 已有 `report.json` 时会拒绝覆盖；复跑请换目录。只测一个模型可增加 `--families vgg11`。
+该脚本默认采用 auto，保留旧 online_ms 及新增三段 TIMING；固定旧实时编码口径时显式使用 --encode-mode stream。
 固定 channel tile、diagonal chunk、baby step 和密码参数再作性能对比，不并行启动多个 GPU 推理任务。
 
 ResNet 可将第 5 节某条命令改为 `--count 6`，自行排除图 0 后统计图 1–5。
@@ -582,8 +639,8 @@ ResNet 可将第 5 节某条命令改为 `--count 6`，自行排除图 0 后统�
 | SqueezeNet | 3816.211 | 2672.788 | 29.96% |
 | AlexNet | 5973.186 | 5411.373 | 9.41% |
 
-ResNet20 另外完成过一张图的 N16 回归，online 为 732.444 ms，38 次 Boot；
-本轮没有重新完成 ResNet32/44/56/110 的整网密文实测，提供运行入口不代表这些深度本轮已通过。
+前述 N17 优化记录中的 ResNet 回归只覆盖 ResNet20：旧 online 为 732.444 ms、38 次 Boot。
+当前日志/资源流程的额外验证覆盖全部十个模型，见下文；两轮硬件、权重及计时口径应分别记录。
 
 以上是历史固定参数/计时边界下的证据，不是任意 ONNX、硬件、分块或全测试集准确率保证。
 新机器按本指南生成自己的报告即可，不依赖这些历史文件。
@@ -602,6 +659,37 @@ ResNet20 另外完成过一张图的 N16 回归，online 为 732.444 ms，38 次
 这些误差包含激活多项式近似；不能用同多项式逐层 `1e-2` 校验通过替代这一总误差要求。
 已测样本 top-1 一致，也不构成完整 CIFAR-10 准确率无损的结论。
 
+### 三段计时与默认优化路径的额外验证
+
+日志/资源流程在 RTX PRO 6000 Blackwell Server Edition（97887 MiB 显存）、
+CUDA 12.8、GCC 11 环境实测。默认 auto 在 ResNet20 上选择整网预编码，
+估算权重缓存约 75.93 GiB；推理阶段两张图的 weights_ms 和 keys_ms 均为 0。
+强制 stream 的两张图也没有新增 key，权重编码时间完整计入第三项。
+
+ResNet20 一张图、默认简洁输出的示例（ms）：
+
+| 项目 | 实测 |
+|---|---:|
+| 模型资源及进程开销 | 9063.622 |
+| Boot 资源 | 3032.101 |
+| 单图推理阶段（含输入、校验与输出） | 1054.829 |
+| 三项合计 | 13150.551 |
+
+该次与 GNU time 的差额为 0.551 ms。
+十模型矩阵各次对照的最大绝对差额约 11.1 ms，符合系统时钟粒度及外部显示舍入范围。
+
+验证还包括 ResNet20–110 整网、全部五个 CNN 整网、N16 线性层与 N17 Boot/ReLU、
+CNN 预编码前缀的两图复用、原 ResNet 分阶段脚本以及 CNN 性能脚本兼容性。
+这些是有限样本的功能/计时校验，不是全测试集准确率或完整参数空间的最优性证明。
+默认使用当前已验证的优化配置：auto、CNN channel tile 512、diagonal chunk 64、
+baby step 128；ResNet 保留默认逐层 BSGS 策略和本分支优化内核。
+需要固定对比可显式选择 pre/stream 和分块参数。
+
+原始记录在本次工作区的 `validation/runtime-20261029/`，
+其中 `attempt02/report.json`、`final-resnet/report.json`、
+`resnet-staged-final/report.json` 与 `default-optimal/report.json` 分别保存矩阵、
+最终缓存/计时、分阶段和脚本默认值校验。新环境无需预先拥有这些历史文件。
+
 ## 10. 常见问题与文件位置
 
 | 现象 | 检查方法 |
@@ -611,6 +699,7 @@ ResNet20 另外完成过一张图的 N16 回归，online 为 732.444 ms，38 次
 | `Unsupported gpu architecture 'compute_120'` | RTX 5090 需要支持该目标的 CUDA；其他 GPU 使用实际架构编号 |
 | RMM clone/FetchContent 下载失败 | 按第 3 节准备 RMM 22.12 头文件并显式传入路径 |
 | 找不到 tommath 或 spdlog | 安装 `libtommath-dev`、`libspdlog-dev`；本指南使用默认 `USE_GMP=OFF` |
+| 不认识 --encode-mode / --log-format / --timing-file | 拉取代码后重编译两个入口，确认 --binary 指向当前构建 |
 | 找不到 `libcheddar.so` | 设置同一构建目录的 LD_LIBRARY_PATH，避免加载旧构建库 |
 | 找不到 ONNX、.bin 或 CIFAR 文件 | 检查绝对路径；--weights 接收导出的 .bin，--cifar 接收实际二进制文件 |
 | `operator list does not match...` / BN 未折叠 | 使用匹配 family 的受支持 CIFAR-10 推理图；不能仅改 family 强行适配其他图 |
@@ -618,7 +707,7 @@ ResNet20 另外完成过一张图的 N16 回归，online 为 732.444 ms，38 次
 | 显存或 CPU 内存不足 | 降低 --channel-tile / --diagonal-chunk，记录新配置后重测；不要把参数变化混入原性能对照 |
 | 验证器缺少 `float-FAMILY.json` | 先完成 8.1，C++ 直接推理不要求这些文件 |
 | 超过参考图数或源数据哈希不匹配 | 使用同一 ONNX/CIFAR，从图 0 重新生成足够数量的参考 |
-| 程序提前退出且没有 `GPU_ONLY_PASS` | 检查日志中的首个 FAILED/异常及真实退出码，不将已有部分 RESULT 当整网成功 |
+| JSON 日志提前退出且没有 `GPU_ONLY_PASS` | 检查日志中的首个 FAILED/异常及真实退出码，不将已有部分 RESULT 当整网成功 |
 
 `models/`、`validation/` 和 `build/` 默认不提交到 GitHub。
 克隆分支得到的是源码与脚本，ONNX、CIFAR、导出权重、参考和运行产物由你在本机准备。

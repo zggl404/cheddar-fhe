@@ -1,4 +1,5 @@
 #include "core/MemoryPool.h"
+#include "common/Assert.h"
 
 namespace cheddar {
 
@@ -10,6 +11,7 @@ MemoryPool::MemoryPool(const Parameter<word> &param)
   const int word_size = param.word_size_;
   int limb_size = word_size * degree;
   auto add_bin = [&](int size) {
+    bin_sizes_.push_back(size);
     if (param.log_degree_ <= 16) {
       memory_pool_.add_bin(size);
     } else {
@@ -47,6 +49,16 @@ MemoryPool::MemoryPool(const Parameter<word> &param)
 MemoryPool::~MemoryPool() {
   // reset to cuda_device_resource
   rmm::mr::set_current_device_resource(nullptr);
+}
+
+size_t MemoryPool::AvailableBytes() const {
+  size_t free=0,total=0;
+  AssertTrue(cudaMemGetInfo(&free,&total)==cudaSuccess,"cannot query GPU memory budget");
+  uint64_t reserved=0,used=0;
+  if(cudaMemPoolGetAttribute(base_.pool_handle(),cudaMemPoolAttrReservedMemCurrent,&reserved)==cudaSuccess&&
+     cudaMemPoolGetAttribute(base_.pool_handle(),cudaMemPoolAttrUsedMemCurrent,&used)==cudaSuccess&&reserved>=used)
+    free+=reserved-used;
+  return free;
 }
 
 template MemoryPool::MemoryPool(const Parameter<uint32_t> &param);

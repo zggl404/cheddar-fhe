@@ -1,3 +1,4 @@
+add_executable(inference_run_test ../tests/inference_run_test.cpp)
 if(BUILD_RESNET_EXAMPLE)
   add_executable(resnet_cifar ResNetCifar.cpp)
   target_link_libraries(resnet_cifar PRIVATE cheddar)

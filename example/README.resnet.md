@@ -12,7 +12,7 @@ StC starts at level 12, also the legacy `default_encryption_level`; the maximum
 level is 24. The resolver generates 37 main, 6 terminal, and 11 P primes
 (dnum=4), rather than loading the AE prime table. Actual per-level scales
 differ from the targets.
-Each GPU run prints a JSON `PARAM` record with the requested profile, actual
+With `--log-format json`, each GPU run prints a JSON `PARAM` record with the requested profile, actual
 prime pools, level configuration, and actual normal scales.
 
 `--scale-bits 48` remains an explicit comparison option: normal/Boot targets
@@ -130,13 +130,23 @@ nonzero.
 
 ## Timing and validation
 
-Weights are GPU encoded one affine layer at a time to bound memory use for
-deep models. Preparation is outside the timed ciphertext evaluation, but
-included in image wall time. Weight preparation, keys, input, online evaluation,
-and validation are reported separately. These synchronized, instrumented times
-are correctness-validation timings, not a steady-state performance comparison.
-`resident_gpu_bytes` is an end-of-image cudaMemGetInfo snapshot including RMM
-reservation, not peak live tensor storage or memory traffic.
+The default output is a compact human-readable parameter/result table. Use
+`--verbose 1` for per-layer diagnostics, or `--log-format json` for PARAM,
+RESOURCES, RESULT and TIMING records. Validation scripts request JSON explicitly.
+
+`--encode-mode auto` first prepares all model rotation requests, then Boot
+switch/rotation keys and constants. It selects resident pre-encoded weights
+when the conservative budget fits; otherwise it uses streamed encoding.
+`pre` forces resident weights and fails on insufficient capacity; `stream`
+encodes layers during inference. Numerical checks remain enabled.
+
+Use `python scripts/run_inference.py --binary build/example/resnet_cifar ...`
+for three additive end-to-end wall categories: model resources/process overhead,
+Boot resources, and inference (input, FHE, validation/output, plus streamed
+encoding). Select one image with `--count 1`. The launcher includes its own and
+child-process startup/teardown; Linux clock ticks and final printing bound the
+small difference from external `time`. The old segmented `online_ms` remains
+a JSON diagnostic with a different boundary. See the [complete Chinese guide](../README.md).
 
 ```sh
 python3 scripts/validate_resnet.py --binary build/example/resnet_cifar \

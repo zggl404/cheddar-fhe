@@ -36,8 +36,9 @@ class UserInterface {
    * sparse-to-dense) will be prepared automatically.
    *
    * @param context CKKS context (can be a BootContext or a Context)
+   * @param defer_boot_keys Prepare dense/sparse switch keys later with PrepareBootKeys().
    */
-  explicit UserInterface(ContextPtr<word> context);
+  explicit UserInterface(ContextPtr<word> context,bool defer_boot_keys=false);
 
   /**
    * @brief Encrypt a plaintext into a ciphertext.
@@ -85,6 +86,9 @@ class UserInterface {
    */
   void PrepareRotationKey(const EvkRequest &evk_request);
 
+  // Idempotent: generate dense/sparse Boot switch keys when preparation is staged.
+  void PrepareBootKeys();
+
  private:
   static inline constexpr double kErrorStandardDeviation = 3.2;
   static inline constexpr int kernel_block_dim_ = 256;
@@ -94,6 +98,7 @@ class UserInterface {
   Dv sparse_secret_;
 
   EvkMap<word> evk_map_;
+  bool boot_keys_prepared_=false;
 
   std::vector<word> all_primes_;
 

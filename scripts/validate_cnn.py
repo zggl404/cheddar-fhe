@@ -5,6 +5,7 @@ import hashlib
 import json
 from pathlib import Path
 import subprocess
+import sys
 import time
 
 
@@ -18,7 +19,8 @@ def main():
     parser.add_argument('--reference-dir',type=Path,required=True)
     parser.add_argument('--families',nargs='+',default=['vgg11','vgg16','mobilenet','squeezenet','alexnet'],choices=['vgg11','vgg16','mobilenet','squeezenet','alexnet'])
     parser.add_argument('--count',type=int,default=3);parser.add_argument('--relu-range',type=float,default=10)
-    parser.add_argument('--channel-tile',type=int,default=16)
+    parser.add_argument('--channel-tile',type=int,default=512)
+    parser.add_argument('--encode-mode',choices=('auto','pre','stream'),default='auto')
     args=parser.parse_args()
     if not 1<=args.count<=10000:parser.error('count must be in [1,10000]')
     args.output.mkdir(parents=True,exist_ok=True)
@@ -37,7 +39,7 @@ def main():
         golden=json.loads((args.reference_dir/f'float-{family}.json').read_text())
         if golden['source_sha256']!=manifest['source_sha256'] or golden['cifar_sha256']!=report['cifar_sha256']:
             raise RuntimeError('independent reference source/data hash mismatch')
-        command=[str(args.binary),'--weights',str(model),'--cifar',str(args.cifar),'--stop-after',str(stop),
+        command=[sys.executable,str(root/'scripts/run_inference.py'),'--binary',str(args.binary),'--log-format','json','--verbose','1','--encode-mode',args.encode_mode,'--weights',str(model),'--cifar',str(args.cifar),'--stop-after',str(stop),
                  '--count',str(count),'--relu-range',str(args.relu_range),'--channel-tile',str(args.channel_tile)]
         cell=dict(name=name,command=command,model_sha256=sha(model),log=f'{name}.log',images=[])
         report['cells'].append(cell);save();begin=time.monotonic();parameters=None;gpu_only=False

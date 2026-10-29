@@ -8,6 +8,7 @@ import os
 from pathlib import Path
 import statistics
 import subprocess
+import sys
 import time
 
 
@@ -23,6 +24,7 @@ def main():
     p.add_argument('--count',type=int,default=6);p.add_argument('--warmup',type=int,default=1)
     p.add_argument('--channel-tile',type=int,default=512);p.add_argument('--diagonal-chunk',type=int,default=64)
     p.add_argument('--baby-step',type=int,default=128)
+    p.add_argument('--encode-mode',choices=('auto','pre','stream'),default='auto')
     a=p.parse_args()
     boots={'vgg11':16,'vgg16':26,'mobilenet':54,'squeezenet':36,'alexnet':14}
     if any(f not in boots for f in a.families) or not 0<=a.warmup<a.count<=10000:p.error('invalid family/sample range')
@@ -50,7 +52,7 @@ def main():
             if golden['source_sha256']!=manifest['source_sha256'] or golden['cifar_sha256']!=report['cifar_sha256']:
                 raise RuntimeError('reference source/data mismatch')
             if len(golden['images'])<a.count:raise RuntimeError('insufficient independent reference images')
-            command=[str(binary),'--weights',str(model),'--cifar',str(a.cifar),'--count',str(a.count),
+            command=[sys.executable,str(root/'scripts/run_inference.py'),'--binary',str(binary),'--log-format','json','--verbose','1','--encode-mode',a.encode_mode,'--weights',str(model),'--cifar',str(a.cifar),'--count',str(a.count),
                 '--channel-tile',str(a.channel_tile),'--diagonal-chunk',str(a.diagonal_chunk),'--baby-step',str(a.baby_step)]
             cell=dict(family=family,command=command,model_sha256=sha(model),images=[],gpu_before=gpu())
             report['cells'].append(cell);save();nodes=[];parameters=None;gpu_only=False;begin=time.monotonic()

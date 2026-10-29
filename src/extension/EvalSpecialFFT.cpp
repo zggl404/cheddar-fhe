@@ -193,7 +193,7 @@ void EvalSpecialFFT<word>::PreparePlaintexts(ConstContextPtr<word> context) {
   cts_scale = std::pow(cts_scale, 1.0 / num_cts_phases);
 
   for (int i = 0; i < num_cts_phases; i++) {
-    std::cout << "CtS preparation phase " << i << std::endl;
+    Progress("CtS preparation phase " + std::to_string(i));
     // CtS: high strides (num_slots / 2) --> low strides (1)
     int num_stages;
     if (i == 0) {
@@ -256,7 +256,7 @@ void EvalSpecialFFT<word>::PreparePlaintexts(ConstContextPtr<word> context) {
   int stc_stages_left = log_num_slots;
   int stc_stages_cumul = 0;
   for (int i = 0; i < num_stc_phases; i++) {
-    std::cout << "StC preparation phase " << i << std::endl;
+    Progress("StC preparation phase " + std::to_string(i));
     // StC: low strides (1) --> high strides (num_slots / 2)
     int num_stages = stc_stages_left / (num_stc_phases - i);
     stc_stages_left -= num_stages;

@@ -1,6 +1,7 @@
 #pragma once
 
 #include <memory>
+#include <algorithm>
 #include <vector>
 #include <rmm/mr/device/binning_memory_resource.hpp>
 #include <rmm/mr/device/cuda_async_memory_resource.hpp>
@@ -21,9 +22,18 @@ class MemoryPool {
   template <typename word>
   explicit MemoryPool(const Parameter<word> &param);
   ~MemoryPool();
+  size_t AllocationBytes(size_t bytes) const {
+    if(!bytes)return 0;
+    auto it=std::lower_bound(bin_sizes_.begin(),bin_sizes_.end(),bytes);
+    return it==bin_sizes_.end()?bytes:*it;
+  }
+  // Driver-free memory plus unused bytes in this RMM CUDA pool; excludes
+  // free blocks already owned by fixed-size bins, so this is conservative.
+  size_t AvailableBytes() const;
 
  private:
   DefaultUpstream base_;
+  std::vector<size_t> bin_sizes_;
   std::vector<std::unique_ptr<rmm::mr::fixed_size_memory_resource<DefaultUpstream>>> bins_;
   MemoryPoolBase memory_pool_;
 };

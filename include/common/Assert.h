@@ -4,6 +4,11 @@
 #include <string>
 
 namespace cheddar {
+inline bool diagnostic_logging_enabled = true;
+inline void SetDiagnosticLogging(bool enabled) { diagnostic_logging_enabled = enabled; }
+inline void Progress(const std::string &msg) {
+  if (diagnostic_logging_enabled) std::cout << msg << std::endl;
+}
 
 // Exit if fails
 inline void AssertTrue(bool expr, const std::string &msg) {
@@ -30,7 +35,7 @@ inline void CheckFalse(bool expr, const std::string &msg) {
   CheckTrue(!expr, msg);
 }
 inline void Warn(const std::string &msg) {
-  std::clog << "WARN: " << msg << std::endl;
+  if (diagnostic_logging_enabled) std::clog << "WARN: " << msg << std::endl;
 }
 
 template <typename Container1, typename Container2>

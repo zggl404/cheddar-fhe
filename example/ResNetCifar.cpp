@@ -7,6 +7,8 @@
 #include "extension/BootParameterLiteral.h"
 #include "extension/ResNetOps.h"
 #include "extension/ResNetPolynomial.h"
+#include "InferenceRun.h"
+#include "common/Assert.h"
 
 using namespace cheddar;
 using namespace cheddar::resnet;
@@ -63,6 +65,7 @@ struct Options {
   std::string weights, cifar, mode="full";
   int start=0, count=1, max_blocks=1, probe_stage=2, baby_step=0, scale_bits=40;
   double relu_range=kRange;
+  example::RunOptions run;
 };
 Options Parse(int argc,char** argv) {
   Options o;
@@ -80,7 +83,7 @@ Options Parse(int argc,char** argv) {
     else if(a=="--baby-step") o.baby_step=std::stoi(v);
     else if(a=="--scale-bits") o.scale_bits=std::stoi(v);
     else if(a=="--relu-range") o.relu_range=std::stod(v);
-    else throw std::runtime_error("unknown option: "+a);
+    else if(!o.run.Parse(a,v)) throw std::runtime_error("unknown option: "+a);
   }
   Require(std::set<std::string>{"encode","boot","relu","conv","stem","blocks","projection","full","reference"}.count(o.mode),
           "mode: encode|boot|relu|conv|stem|blocks|projection|full|reference");
@@ -116,8 +119,8 @@ struct Timing { double weights=0,keys=0,input=0,online=0,checks=0; };
 
 class Runner {
  public:
-  Runner(std::shared_ptr<Boot> context, UserInterface<Word>& client,const Model* model,int bs,double range)
-      : context_(std::move(context)),client_(client),model_(model),bs_(bs),range_(range) {}
+  Runner(std::shared_ptr<Boot> context, UserInterface<Word>& client,const Model* model,int bs,double range,const example::RunOptions& run)
+      : context_(std::move(context)),client_(client),model_(model),bs_(bs),range_(range),run_(run) {}
   Timing timing;
   Tensor reference{3,32}, exact{3,32};
   Ct ciphertext;
@@ -134,15 +137,55 @@ class Runner {
       auto it=prepared_.find(rotation);
       if(it==prepared_.end() || it->second<level) missing.AddRequest(rotation,level);
     }
+    Require(!keys_locked_||missing.empty(),"model rotation was not prepared before inference");
     if(missing.empty()) return;
     timing.keys+=Measure([&]{client_.PrepareRotationKey(missing);});
     for(auto [rotation,level]:missing) prepared_.AddRequest(rotation,level);
   }
   void PrepareBoot() {
+    client_.PrepareBootKeys();
     context_->PrepareEvalMod();
     context_->PrepareEvalSpecialFFT(kSlots,BootVariant::kImaginaryRemoving);
-    EvkRequest request; context_->AddRequiredRotations(request,kSlots); PrepareKeys(request);
+    EvkRequest request; context_->AddRequiredRotations(request,kSlots); boot_rotations_=request.size(); PrepareKeys(request);
     relu=std::make_unique<EvalReLU>(context_);
+  }
+  bool preencoded=false;
+  void PrepareModel() {
+    EvkRequest request;
+    auto add=[&](const std::string& name,const Tensor& shape,int stride,int kind) {
+      builders_[name]=[this,name,shape,stride,kind](bool encode) {
+        if(kind==1)return MakePool(context_,shape,bs_,encode);
+        if(kind==2)return MakeClassifier(context_,model_->At("fc.weight"),model_->At("fc.bias"),bs_,range_,encode);
+        return MakeConv(context_,shape,model_->At(name+".weight"),model_->At(name+".bias"),stride,bs_,range_,encode);
+      };
+      auto descriptor=builders_.at(name)(false);
+      descriptor->AddRequiredRotations(request);estimated_bytes_+=descriptor->EstimatedBytes();
+    };
+    Tensor shape(3,32);add("stem",shape,1,0);shape=Tensor(16,32);
+    for(int stage=1;stage<=3;++stage)for(int i=0;i<BlocksPerStage(model_->depth);++i) {
+      const std::string prefix="layer"+std::to_string(stage)+"."+std::to_string(i);
+      const bool projection=stage>1&&i==0;const int stride=projection?2:1;
+      if(projection)add(prefix+".shortcut",shape,2,0);
+      add(prefix+".conv1",shape,stride,0);
+      shape=Tensor(stage==1?16:(stage==2?32:64),shape.width/stride,shape.pack*stride);
+      add(prefix+".conv2",shape,1,0);
+    }
+    add("avgpool",shape,1,1);add("fc",Tensor(64,1),1,2);
+    model_rotations_=request.size();PrepareKeys(request);
+  }
+  void PrepareWeights() {
+    const size_t reserve=size_t(4)<<30;
+    size_t available=context_->memory_pool_.AvailableBytes();available=available>reserve?available-reserve:0;
+    preencoded=example::UsePreencoding(run_,estimated_bytes_,available);
+    if(preencoded) {
+      size_t free=0,total=0;Require(cudaMemGetInfo(&free,&total)==cudaSuccess,"cannot query GPU capacity");
+      Require(estimated_bytes_<=total-reserve,"preencoded weights exceed GPU capacity; use --encode-mode stream");
+    }
+    example::PrintEncoding(run_,preencoded,estimated_bytes_,available,model_rotations_,boot_rotations_);
+    if(preencoded)timing.weights+=Measure([&]{
+      for(const auto& entry:builders_)resident_.emplace(entry.first,entry.second(true));
+    });
+    keys_locked_=true;
   }
   void Encrypt(const Tensor& input) {
     reference=input; exact=input;
@@ -176,7 +219,7 @@ class Runner {
         approximation=std::max(approximation,std::abs(expected[i]-fp[i])*range_);
       }
       max_error=std::max(max_error,std::max(error,imaginary));
-      std::cout<<"CHECK name="<<name<<" slots="<<values.size()
+      if(run_.verbose)std::cout<<"CHECK name="<<name<<" slots="<<values.size()
                <<" level="<<context_->param_.NPToLevel(ciphertext.GetNP())
                <<" log_scale="<<std::log2(ciphertext.GetScale())<<" max_abs_error="<<error
                <<" max_imag="<<imaginary<<" polynomial_vs_relu="<<approximation<<std::endl;
@@ -186,10 +229,11 @@ class Runner {
   void Convolution(const std::string& prefix,int stride) {
     const auto& w=model_->At(prefix+".weight"); const auto& b=model_->At(prefix+".bias");
     std::unique_ptr<PackedLinear> op;
-    timing.weights+=Measure([&]{op=MakeConv(context_,reference,w,b,stride,bs_,range_);});
-    EvkRequest request; op->AddRequiredRotations(request); PrepareKeys(request);
-    std::cout<<"PREPARE name="<<prefix<<" diagonals="<<op->NumDiagonals()<<std::endl;
-    Online([&]{op->Evaluate(ciphertext,ciphertext,client_.GetEvkMap());});
+    PackedLinear* operation=Cached(prefix);
+    if(!operation) {timing.weights+=Measure([&]{op=MakeConv(context_,reference,w,b,stride,bs_,range_);});operation=op.get();}
+    EvkRequest request; operation->AddRequiredRotations(request); PrepareKeys(request);
+    if(run_.verbose)std::cout<<"PREPARE name="<<prefix<<" diagonals="<<operation->NumDiagonals()<<std::endl;
+    Online([&]{operation->Evaluate(ciphertext,ciphertext,client_.GetEvkMap());});
     reference=Conv(reference,w,b,stride); exact=Conv(exact,w,b,stride);
     Check(prefix);
   }
@@ -206,9 +250,10 @@ class Runner {
     std::unique_ptr<PackedLinear> downsample;
     if(projection) {
       const auto& w=model_->At(prefix+".shortcut.weight"); const auto& b=model_->At(prefix+".shortcut.bias");
-      timing.weights+=Measure([&]{downsample=MakeConv(context_,skip_ref,w,b,2,bs_,range_);});
-      EvkRequest request; downsample->AddRequiredRotations(request); PrepareKeys(request);
-      Online([&]{downsample->Evaluate(skip,skip,client_.GetEvkMap());});
+      PackedLinear* operation=Cached(prefix+".shortcut");
+      if(!operation) {timing.weights+=Measure([&]{downsample=MakeConv(context_,skip_ref,w,b,2,bs_,range_);});operation=downsample.get();}
+      EvkRequest request; operation->AddRequiredRotations(request); PrepareKeys(request);
+      Online([&]{operation->Evaluate(skip,skip,client_.GetEvkMap());});
       skip_ref=Conv(skip_ref,w,b,2); skip_exact=Conv(skip_exact,w,b,2);
     }
     Convolution(prefix+".conv1",projection?2:1); Relu(prefix+".relu1");
@@ -222,14 +267,16 @@ class Runner {
   }
   void Classify() {
     std::unique_ptr<PackedLinear> pool,fc;
-    timing.weights+=Measure([&]{pool=MakePool(context_,reference,bs_);});
-    EvkRequest request; pool->AddRequiredRotations(request); PrepareKeys(request);
-    Online([&]{pool->Evaluate(ciphertext,ciphertext,client_.GetEvkMap());});
+    PackedLinear* pooling=Cached("avgpool");
+    if(!pooling) {timing.weights+=Measure([&]{pool=MakePool(context_,reference,bs_);});pooling=pool.get();}
+    EvkRequest request; pooling->AddRequiredRotations(request); PrepareKeys(request);
+    Online([&]{pooling->Evaluate(ciphertext,ciphertext,client_.GetEvkMap());});
     reference=Pool(reference); exact=Pool(exact); Check("avgpool");
     const auto& w=model_->At("fc.weight"); const auto& b=model_->At("fc.bias");
-    timing.weights+=Measure([&]{fc=MakeClassifier(context_,w,b,bs_,range_);});
-    request.clear(); fc->AddRequiredRotations(request); PrepareKeys(request);
-    Online([&]{fc->Evaluate(ciphertext,ciphertext,client_.GetEvkMap());});
+    PackedLinear* classifier=Cached("fc");
+    if(!classifier) {timing.weights+=Measure([&]{fc=MakeClassifier(context_,w,b,bs_,range_);});classifier=fc.get();}
+    request.clear(); classifier->AddRequiredRotations(request); PrepareKeys(request);
+    Online([&]{classifier->Evaluate(ciphertext,ciphertext,client_.GetEvkMap());});
     reference=FC(reference,w,b); exact=FC(exact,w,b); Check("fc");
   }
   int Prediction() {
@@ -243,9 +290,11 @@ class Runner {
       final_relu_error=std::max(final_relu_error,std::abs(logits[i]-exact.values[i]));
     }
     for(int i=1;i<10;++i) if(out[i].real()>out[prediction].real()) prediction=i;
-    std::cout<<"LOGITS [";
-    for(int i=0;i<10;++i) std::cout<<(i?",":"")<<out[i].real()*range_;
-    std::cout<<"]"<<std::endl;
+    if(run_.verbose) {
+      std::cout<<"LOGITS [";
+      for(int i=0;i<10;++i)std::cout<<(i?",":"")<<out[i].real()*range_;
+      std::cout<<"]"<<std::endl;
+    }
     Require(prediction==Top1(reference),"FHE and polynomial reference top1 mismatch");
     return prediction;
   }
@@ -256,6 +305,12 @@ class Runner {
   int bs_;
   double range_;
   EvkRequest prepared_;
+  example::RunOptions run_;
+  bool keys_locked_=false;
+  size_t estimated_bytes_=0,model_rotations_=0,boot_rotations_=0;
+  std::map<std::string,std::function<std::unique_ptr<PackedLinear>(bool)>> builders_;
+  std::map<std::string,std::unique_ptr<PackedLinear>> resident_;
+  PackedLinear* Cached(const std::string& name) {auto it=resident_.find(name);return it==resident_.end()?nullptr:it->second.get();}
 };
 
 void EncodeProbe(std::shared_ptr<Boot> context, UserInterface<Word>& client) {
@@ -304,13 +359,15 @@ void Reference(const Options& options,const Model& model) {
 }  // namespace
 
 int main(int argc,char** argv) {
+  example::RunReport report;
   const auto process_begin=Clock::now();
   std::cout<<std::setprecision(12);
   try {
-    const auto options=Parse(argc,argv);
+    const auto options=Parse(argc,argv);report.options=options.run;
+    SetDiagnosticLogging(options.run.verbose);
     Model model{};
     if(!options.weights.empty()) model=LoadModel(options.weights);
-    if(options.mode=="reference") {Reference(options,model);return 0;}
+    if(options.mode=="reference") {auto begin=Clock::now();Reference(options,model);report.inference_ms+=example::RunMilliseconds(begin);report.complete=true;return 0;}
     Encoder<Word>::SetGpuOnlyEncoding(true);
     const auto config=ResNetConfig(options.scale_bits);
     const auto resolve_begin=Clock::now();
@@ -326,13 +383,26 @@ int main(int argc,char** argv) {
       param=NewParametersFromLiteral(resolved.parameters);
       context=Boot::Create(*param,resolved.boot);
       MultiLevelCiphertext<Word>::StaticInit(*param,context->encoder_);
-      client=std::make_unique<UserInterface<Word>>(context);
+      client=std::make_unique<UserInterface<Word>>(context,true);
     });
-    PrintParameters(config,*param,context->boot_param_);
-    Runner runner(context,*client,&model,options.baby_step,options.relu_range);
+    if(options.run.Json())PrintParameters(config,*param,context->boot_param_);
+    else std::cout<<"Parameters\n  Model: ResNet"<<model.depth<<"\n  Ring dimension: "<<param->degree_<<"\n  Slots: "<<kSlots
+      <<"\n  Word bits: 32\n  Normal / Boot scale bits: "<<options.scale_bits<<" / 58\n  Q / P primes: "<<param->GetMaxNumQ()<<" / "<<param->alpha_
+      <<"\n  ReLU range: "<<options.relu_range<<"\n  Weights: "<<options.weights<<"\n  CIFAR: "<<options.cifar
+      <<"\n  Start / count: "<<options.start<<" / "<<options.count<<"\n  Mode / baby step: "<<options.mode<<" / "<<options.baby_step
+      <<"\n  Requested encoding: "<<options.run.encoding<<"\n"<<std::flush;
+    Runner runner(context,*client,&model,options.baby_step,options.relu_range,options.run);
+    if(options.mode=="full") {if(!options.run.Json())std::cout<<"Preparing model rotation keys...\n"<<std::flush;runner.PrepareModel();}
     double prepare_ms=0;
-    if(options.mode!="conv" && options.mode!="encode") prepare_ms=Measure([&]{runner.PrepareBoot();});
+    const double model_keys_ms=runner.timing.keys;
+    if(options.mode!="conv" && options.mode!="encode") {
+      if(!options.run.Json())std::cout<<"Preparing Boot resources...\n"<<std::flush;
+      prepare_ms=Measure([&]{runner.PrepareBoot();});report.boot_ms+=prepare_ms;
+    }
+    const double boot_keys_ms=runner.timing.keys-model_keys_ms;
     const double setup_keys_ms=runner.timing.keys;
+    if(options.mode=="full")runner.PrepareWeights();
+    const auto probe_begin=Clock::now();
     if(options.mode=="encode") EncodeProbe(context,*client);
     else if(options.mode=="relu" || options.mode=="boot") {
       Tensor probe(16,32);
@@ -361,6 +431,7 @@ int main(int argc,char** argv) {
         runner.Relu("relu_probe");
       }
     } else for(int image=options.start;image<options.start+options.count;++image) {
+      const auto inference_begin=Clock::now();
       int label; auto input=ReadCifar(options.cifar,image,model,label);
       const Timing previous=runner.timing;
       const uint64_t previous_boots=runner.relu?runner.relu->BootCount():0;
@@ -386,15 +457,17 @@ int main(int argc,char** argv) {
       if(options.mode=="full") {runner.Classify();prediction=runner.Prediction();}
       auto stats=Encoder<Word>::GetEncodingStats();
       size_t free=0,total=0;cudaMemGetInfo(&free,&total);
+      if(options.run.Json()) {
       std::cout<<"RESULT {\"status\":\"PASS\",\"mode\":\""<<options.mode<<"\",\"depth\":"<<model.depth
         <<",\"image\":"<<image<<",\"label\":"<<label<<",\"prediction\":"<<prediction
         <<",\"relu_range\":"<<options.relu_range
+        <<",\"encode_mode\":\""<<(runner.preencoded?"pre":"stream")<<"\""
         <<",\"baby_step\":"<<options.baby_step
         <<",\"final_slots\":"<<runner.ciphertext.GetNumSlots()
         <<",\"polynomial_top1\":"<<(options.mode=="full"?Top1(runner.reference):-1)
         <<",\"relu_top1\":"<<(options.mode=="full"?Top1(runner.exact):-1)
         <<",\"max_abs_error\":"<<runner.max_error<<",\"init_ms\":"<<init_ms
-        <<",\"boot_prepare_ms\":"<<std::max(0.0,prepare_ms-setup_keys_ms)
+        <<",\"boot_prepare_ms\":"<<std::max(0.0,prepare_ms-boot_keys_ms)
         <<",\"setup_keys_ms\":"<<setup_keys_ms<<",\"weights_ms\":"<<runner.timing.weights-previous.weights
         <<",\"keys_ms\":"<<runner.timing.keys-previous.keys<<",\"input_ms\":"<<runner.timing.input-previous.input
         <<",\"online_ms\":"<<runner.timing.online-previous.online<<",\"checks_ms\":"<<runner.timing.checks-previous.checks
@@ -415,11 +488,17 @@ int main(int argc,char** argv) {
         array("fhe_logits",runner.logits);array("polynomial_logits",runner.reference.values);array("relu_logits",runner.exact.values);
       }
       std::cout<<"}"<<std::endl;
+      } else example::PrintInference("ResNet"+std::to_string(model.depth),image,label,prediction,
+          options.mode=="full"?runner.exact.values:std::vector<double>{},runner.logits,runner.max_error,runner.relu?runner.relu->BootCount()-previous_boots:0);
+      report.inference_ms+=example::RunMilliseconds(inference_begin);
     }
+    if(options.mode=="encode"||options.mode=="boot"||options.mode=="relu")
+      report.inference_ms+=example::RunMilliseconds(probe_begin);
     auto stats=Encoder<Word>::GetEncodingStats();
     Require(stats.cpu_attempts==0 && stats.gpu_vectors>0,"GPU-only encoding audit failed");
-    std::cout<<"GPU_ONLY_PASS vectors="<<stats.gpu_vectors<<" constants="<<stats.gpu_constants
+    if(options.run.Json()||options.run.verbose)std::cout<<"GPU_ONLY_PASS vectors="<<stats.gpu_vectors<<" constants="<<stats.gpu_constants
              <<" cpu_attempts="<<stats.cpu_attempts<<" online_encodes="<<runner.online_encodes<<std::endl;
+    report.complete=true;
     return 0;
   } catch(const std::exception& e) {
     std::cerr<<"FAILED "<<e.what()<<std::endl; return 1;

@@ -110,7 +110,7 @@ __global__ void AddEvkPart(word *dst, const word *primes,
 }  // namespace kernel
 
 template <typename word>
-UserInterface<word>::UserInterface(ContextPtr<word> context)
+UserInterface<word>::UserInterface(ContextPtr<word> context,bool defer_boot_keys)
     : context_{std::move(context)} {
   const auto &param = context_->param_;
   all_primes_ =
@@ -126,6 +126,7 @@ UserInterface<word>::UserInterface(ContextPtr<word> context)
       "Do not use in production.");
   PrepareSecrets();
   PrepareBasicEvks();
+  if(!defer_boot_keys)PrepareBootKeys();
 }
 
 template <typename word>
@@ -318,7 +319,6 @@ void UserInterface<word>::PrepareRotationKey(const EvkRequest &evk_request) {
 
 template <typename word>
 void UserInterface<word>::PrepareBasicEvks() {
-  int L = context_->param_.L_;
   int alpha = context_->param_.alpha_;
   int degree = context_->param_.degree_;
   NPInfo np = GetNPForEvk(context_->param_.max_level_);
@@ -338,6 +338,13 @@ void UserInterface<word>::PrepareBasicEvks() {
   context_->elem_handler_.Permute(s_conj_view, np, -1, sx_view);
   PrepareEvk(EvkMap<word>::kConjugationKeyIndex, np, s_conj, main_secret_);
 
+}
+
+template <typename word>
+void UserInterface<word>::PrepareBootKeys() {
+  if(boot_keys_prepared_)return;
+  const int L=context_->param_.L_,alpha=context_->param_.alpha_;
+  const auto np=GetNPForEvk(context_->param_.max_level_);
   if (context_->param_.IsUsingSparseSecretEncapsulation()) {
     // Dense to Sparse key
     NPInfo dts_np = GetNPForEvk(-1);
@@ -359,6 +366,7 @@ void UserInterface<word>::PrepareBasicEvks() {
     }
     context_->elem_handler_.Accum(std_key_view, np, std_key_accum_inputs);
   }
+  boot_keys_prepared_=true;
 }
 
 // encryption_secret and target_secret are always prepared at the maximum level

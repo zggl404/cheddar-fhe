@@ -16,7 +16,7 @@ void Edge(Diagonals& diagonals, int dst, int src, double value) {
 
 PackedLinear::PackedLinear(std::shared_ptr<Boot> context, Diagonals diagonals,
     const std::vector<double>& bias, int level, int baby_step,
-    std::vector<std::pair<int,int>> input_traces)
+    std::vector<std::pair<int,int>> input_traces,bool encode)
     : context_(std::move(context)), level_(level), slots_(bias.size()), num_diagonals_(diagonals.size()),
       input_traces_(std::move(input_traces)) {
   Require(level > 0 && !diagonals.empty() && slots_>0 &&
@@ -25,6 +25,20 @@ PackedLinear::PackedLinear(std::shared_ptr<Boot> context, Diagonals diagonals,
           " degree="+std::to_string(context_->param_.degree_)+" diagonals="+std::to_string(diagonals.size()));
   Require(baby_step > 0 && baby_step <= 128 && !(baby_step & (baby_step-1)),
           "baby step must be a power of two in [1,128]");
+  const auto& p=context_->param_;
+  estimated_bytes_=diagonals.size()*context_->memory_pool_.AllocationBytes(
+      size_t(p.degree_)*sizeof(Word)*p.LevelToNP(level,p.alpha_).GetNumTotal());
+  estimated_bytes_+=context_->memory_pool_.AllocationBytes(
+      size_t(p.degree_)*sizeof(Word)*p.LevelToNP(level-1).GetNumTotal());
+  for(const auto& entry:diagonals) {
+    const int rotation=entry.first;
+    Require(rotation>=0&&rotation<slots_&&int(entry.second.size())==slots_,"invalid affine diagonal");
+    if(rotation%baby_step)rotations_.AddRequest(rotation%baby_step,level);
+    if(rotation-rotation%baby_step)rotations_.AddRequest(rotation-rotation%baby_step,level);
+  }
+  for(auto [stride,count]:input_traces_)
+    for(int n=1;n<count;n*=2)rotations_.AddRequest(stride*n,level);
+  if(!encode)return;
   PlainHoistMap map;
   for (auto& [rotation, diagonal] : diagonals) {
     Require(rotation>=0 && rotation<slots_ && int(diagonal.size())==slots_,
@@ -40,11 +54,10 @@ PackedLinear::PackedLinear(std::shared_ptr<Boot> context, Diagonals diagonals,
   context_->encoder_.Encode(bias_, level-1, context_->param_.GetScale(level-1), message);
 }
 void PackedLinear::AddRequiredRotations(EvkRequest& req) const {
-  linear_->AddRequiredRotations(req);
-  for(auto [stride,count]:input_traces_)
-    for(int n=1;n<count;n*=2) req.AddRequest(stride*n,level_);
+  for(auto [rotation,level]:rotations_)req.AddRequest(rotation,level);
 }
 void PackedLinear::Evaluate(Ct& output, const Ct& input, const EvkMap<Word>& keys) const {
+  Require(bool(linear_),"affine descriptor was not encoded");
   Require(context_->param_.NPToLevel(input.GetNP()) == level_, "linear input level mismatch");
   Require(input.GetNumSlots()==slots_, "linear input slot count mismatch");
   context_->AssertSameScale(input.GetScale(), context_->param_.GetScale(level_));
@@ -59,7 +72,7 @@ void PackedLinear::Evaluate(Ct& output, const Ct& input, const EvkMap<Word>& key
 }
 
 std::unique_ptr<PackedLinear> MakeConv(std::shared_ptr<Boot> context,
-    const Tensor& input, const Weight& weight, const Weight& bias, int stride, int bs, double range) {
+    const Tensor& input, const Weight& weight, const Weight& bias, int stride, int bs, double range,bool encode) {
   Require(std::isfinite(range) && range>0,"invalid activation normalization");
   CheckConv(input, weight, bias, stride);
   Tensor output(weight.shape[0], input.width/stride, input.pack*stride);
@@ -85,21 +98,21 @@ std::unique_ptr<PackedLinear> MakeConv(std::shared_ptr<Boot> context,
   for (int c=0; c<output.channels; ++c)
     for (int y=0; y<output.width; ++y)
       for (int x=0; x<output.width; ++x) packed_bias[output.Slot(c,y,x)] = bias.values[c]/range;
-  return std::make_unique<PackedLinear>(context,std::move(diagonals),packed_bias,2,bs);
+  return std::make_unique<PackedLinear>(context,std::move(diagonals),packed_bias,2,bs,std::vector<std::pair<int,int>>{},encode);
 }
 
 std::unique_ptr<PackedLinear> MakePool(std::shared_ptr<Boot> context,
-    const Tensor& input, int bs) {
+    const Tensor& input, int bs,bool encode) {
   Require(input.channels==64 && input.width==8 && input.pack==4, "invalid pooling shape");
   Diagonals diagonals;
   // Sum each channel's 8x8 grid before gathering its anchor into slot c.
   // The gather masks all other slots and performs the original level 2->1 step.
   for(int c=0;c<64;++c) Edge(diagonals,c,input.Slot(c,0,0),1.0/64);
   return std::make_unique<PackedLinear>(context,std::move(diagonals),std::vector<double>(kSlots),
-      2,bs?bs:16,std::vector<std::pair<int,int>>{{4,8},{128,8}});
+      2,bs?bs:16,std::vector<std::pair<int,int>>{{4,8},{128,8}},encode);
 }
 std::unique_ptr<PackedLinear> MakeClassifier(std::shared_ptr<Boot> context,
-    const Weight& weight, const Weight& bias, int bs, double range) {
+    const Weight& weight, const Weight& bias, int bs, double range,bool encode) {
   Require(std::isfinite(range) && range>0,"invalid activation normalization");
   Require(weight.shape==std::vector<uint32_t>({10,64}) && bias.shape==std::vector<uint32_t>{10},
           "invalid FC shape");
@@ -108,7 +121,7 @@ std::unique_ptr<PackedLinear> MakeClassifier(std::shared_ptr<Boot> context,
     for(int in=0;in<64;++in) Edge(diagonals,out,in,weight.values[out*64+in]);
   std::vector<double> packed_bias(kSlots);
   for(int c=0;c<10;++c) packed_bias[c]=bias.values[c]/range;
-  return std::make_unique<PackedLinear>(context,std::move(diagonals),packed_bias,1,bs?bs:16);
+  return std::make_unique<PackedLinear>(context,std::move(diagonals),packed_bias,1,bs?bs:16,std::vector<std::pair<int,int>>{},encode);
 }
 
 EvalReLU::EvalReLU(std::shared_ptr<Boot> context) : context_(std::move(context)) {

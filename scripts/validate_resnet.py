@@ -20,6 +20,7 @@ def main():
     parser.add_argument('--cifar', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--count', type=int, default=10)
+    parser.add_argument('--encode-mode',choices=('auto','pre','stream'),default='auto')
     parser.add_argument('--reference-json', type=Path)
     args = parser.parse_args()
     if not 1 <= args.count <= 10000:
@@ -43,7 +44,7 @@ def main():
         temporary.replace(args.output / 'report.json')
 
     def run(name, options, expected_images=0):
-        command = [str(args.binary), *map(str, options)]
+        command = [sys.executable,str(root/'scripts/run_inference.py'),'--binary',str(args.binary), '--log-format', 'json', '--verbose', '1', '--encode-mode', args.encode_mode, *map(str, options)]
         cell = dict(name=name, command=command, log=f'{name}.log', images=[])
         report['cells'].append(cell)
         begin = time.monotonic()
