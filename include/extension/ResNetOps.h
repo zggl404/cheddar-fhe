@@ -3,6 +3,7 @@
 #include <functional>
 
 #include "extension/BootContext.h"
+#include "common/InferenceTiming.h"
 #include "extension/Hoist.h"
 #include "extension/ResNetData.h"
 
@@ -46,7 +47,7 @@ std::unique_ptr<PackedLinear> MakeClassifier(std::shared_ptr<Boot> context,
 class EvalReLU {
  public:
   explicit EvalReLU(std::shared_ptr<Boot> context);
-  void Evaluate(Ct& output, const Ct& input, const EvkMap<Word>& keys);
+  void Evaluate(Ct& output, const Ct& input, const EvkMap<Word>& keys, InferenceTiming* timing=nullptr);
   uint64_t BootCount() const { return boot_count_; }
   // Optional read-only observer for validating the composed ciphertext stages.
   std::function<void(const char*, const Ct&)> observer;

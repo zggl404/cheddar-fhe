@@ -100,10 +100,7 @@ void Sync() {
   auto rc=cudaDeviceSynchronize();
   Require(rc==cudaSuccess,std::string("CUDA: ")+cudaGetErrorString(rc));
 }
-template<class F> double Measure(F f) {
-  Sync(); auto begin=Clock::now(); f(); Sync();
-  return std::chrono::duration<double,std::milli>(Clock::now()-begin).count();
-}
+template<class F> void Synchronized(F f) { Sync();f();Sync(); }
 void ApplyRelu(Tensor& tensor,bool polynomial,const std::string& name="activation",double range=kRange) {
   if(polynomial) {
     double maximum=0;
@@ -115,19 +112,18 @@ void ApplyRelu(Tensor& tensor,bool polynomial,const std::string& name="activatio
     x=polynomial?PolyReLU(x,range):std::max(0.0,x);
   }
 }
-struct Timing { double weights=0,keys=0,input=0,online=0,checks=0; };
 
 class Runner {
  public:
   Runner(std::shared_ptr<Boot> context, UserInterface<Word>& client,const Model* model,int bs,double range,const example::RunOptions& run)
       : context_(std::move(context)),client_(client),model_(model),bs_(bs),range_(range),run_(run) {}
-  Timing timing;
+  InferenceTiming timing{Sync};
   Tensor reference{3,32}, exact{3,32};
   Ct ciphertext;
   double max_error=0;
   double final_poly_error=0,final_relu_error=0;
   std::vector<double> logits;
-  uint64_t online_encodes=0;
+  uint64_t fhe_encode_calls=0;
   std::unique_ptr<EvalReLU> relu;
 
   void PrepareKeys(const EvkRequest& request) {
@@ -139,7 +135,7 @@ class Runner {
     }
     Require(!keys_locked_||missing.empty(),"model rotation was not prepared before inference");
     if(missing.empty()) return;
-    timing.keys+=Measure([&]{client_.PrepareRotationKey(missing);});
+    Synchronized([&]{client_.PrepareRotationKey(missing);});
     for(auto [rotation,level]:missing) prepared_.AddRequest(rotation,level);
   }
   void PrepareBoot() {
@@ -182,30 +178,29 @@ class Runner {
       Require(estimated_bytes_<=total-reserve,"preencoded weights exceed GPU capacity; use --encode-mode stream");
     }
     example::PrintEncoding(run_,preencoded,estimated_bytes_,available,model_rotations_,boot_rotations_);
-    if(preencoded)timing.weights+=Measure([&]{
+    if(preencoded)Synchronized([&]{
       for(const auto& entry:builders_)resident_.emplace(entry.first,entry.second(true));
     });
     keys_locked_=true;
   }
   void Encrypt(const Tensor& input) {
-    reference=input; exact=input;
-    timing.input+=Measure([&]{
+    timing.Cpu(InferencePhase::Input,[&]{reference=input;exact=input;});
+    timing.Gpu(InferencePhase::Input,[&]{
       auto packed=Pack(input,range_); Message message(packed.begin(),packed.end()); Pt plaintext;
       context_->encoder_.Encode(plaintext,2,context_->param_.GetScale(2),message);
       client_.Encrypt(ciphertext,plaintext);
     });
     Check("input");
   }
-  template<class F> void Online(F f) {
-    const auto before=Encoder<Word>::GetEncodingStats();
-    timing.online+=Measure(f);
+  template<class F> void Audit(F f) {
+    const auto before=Encoder<Word>::GetEncodingStats();f();
     const auto after=Encoder<Word>::GetEncodingStats();
-    online_encodes+=(after.gpu_vectors-before.gpu_vectors)+(after.gpu_constants-before.gpu_constants);
-    Require(online_encodes==0,"unexpected online encoding");
-    Require(after.cpu_attempts==0,"CPU encoding attempted");
+    fhe_encode_calls+=(after.gpu_vectors-before.gpu_vectors)+(after.gpu_constants-before.gpu_constants);
+    Require(fhe_encode_calls==0&&after.cpu_attempts==0,"encoding inside FHE evaluation");
   }
+  template<class F> void Evaluate(InferencePhase phase,F f) { Audit([&]{timing.Gpu(phase,f);}); }
   void Check(const std::string& name) {
-    timing.checks+=Measure([&]{
+    timing.Gpu(InferencePhase::ValidationOutput,[&]{
       Pt plaintext; client_.Decrypt(plaintext,ciphertext);
       std::vector<Complex> values; context_->encoder_.Decode(values,plaintext);
       auto expected=Pack(reference,range_), fp=Pack(exact,range_);
@@ -230,54 +225,55 @@ class Runner {
     const auto& w=model_->At(prefix+".weight"); const auto& b=model_->At(prefix+".bias");
     std::unique_ptr<PackedLinear> op;
     PackedLinear* operation=Cached(prefix);
-    if(!operation) {timing.weights+=Measure([&]{op=MakeConv(context_,reference,w,b,stride,bs_,range_);});operation=op.get();}
+    if(!operation) {timing.Gpu(InferencePhase::WeightPrepare,[&]{op=MakeConv(context_,reference,w,b,stride,bs_,range_);});operation=op.get();}
     EvkRequest request; operation->AddRequiredRotations(request); PrepareKeys(request);
-    if(run_.verbose)std::cout<<"PREPARE name="<<prefix<<" diagonals="<<operation->NumDiagonals()<<std::endl;
-    Online([&]{operation->Evaluate(ciphertext,ciphertext,client_.GetEvkMap());});
-    reference=Conv(reference,w,b,stride); exact=Conv(exact,w,b,stride);
+    if(run_.verbose)timing.Cpu(InferencePhase::ValidationOutput,[&]{std::cout<<"PREPARE name="<<prefix<<" diagonals="<<operation->NumDiagonals()<<std::endl;});
+    Evaluate(InferencePhase::Linear,[&]{operation->Evaluate(ciphertext,ciphertext,client_.GetEvkMap());});
+    timing.Cpu(InferencePhase::Reference,[&]{reference=Conv(reference,w,b,stride);exact=Conv(exact,w,b,stride);});
     Check(prefix);
   }
   void Relu(const std::string& name) {
-    ApplyRelu(reference,true,name,range_); ApplyRelu(exact,false,name,range_);
-    Online([&]{relu->Evaluate(ciphertext,ciphertext,client_.GetEvkMap());});
+    timing.Cpu(InferencePhase::Reference,[&]{ApplyRelu(reference,true,name,range_);ApplyRelu(exact,false,name,range_);});
+    Audit([&]{relu->Evaluate(ciphertext,ciphertext,client_.GetEvkMap(),&timing);});
     Check(name);
   }
   void Block(int stage,int index) {
     const std::string prefix="layer"+std::to_string(stage)+"."+std::to_string(index);
     const bool projection=stage>1 && index==0;
-    Tensor skip_ref=reference,skip_exact=exact; Ct skip;
-    context_->Copy(skip,ciphertext);
+    Tensor skip_ref(1,1),skip_exact(1,1);Ct skip;
+    timing.Cpu(InferencePhase::Reference,[&]{skip_ref=reference;skip_exact=exact;});
+    Evaluate(InferencePhase::Graph,[&]{context_->Copy(skip,ciphertext);});
     std::unique_ptr<PackedLinear> downsample;
     if(projection) {
       const auto& w=model_->At(prefix+".shortcut.weight"); const auto& b=model_->At(prefix+".shortcut.bias");
       PackedLinear* operation=Cached(prefix+".shortcut");
-      if(!operation) {timing.weights+=Measure([&]{downsample=MakeConv(context_,skip_ref,w,b,2,bs_,range_);});operation=downsample.get();}
+      if(!operation) {timing.Gpu(InferencePhase::WeightPrepare,[&]{downsample=MakeConv(context_,skip_ref,w,b,2,bs_,range_);});operation=downsample.get();}
       EvkRequest request; operation->AddRequiredRotations(request); PrepareKeys(request);
-      Online([&]{operation->Evaluate(skip,skip,client_.GetEvkMap());});
-      skip_ref=Conv(skip_ref,w,b,2); skip_exact=Conv(skip_exact,w,b,2);
+      Evaluate(InferencePhase::Linear,[&]{operation->Evaluate(skip,skip,client_.GetEvkMap());});
+      timing.Cpu(InferencePhase::Reference,[&]{skip_ref=Conv(skip_ref,w,b,2);skip_exact=Conv(skip_exact,w,b,2);});
     }
     Convolution(prefix+".conv1",projection?2:1); Relu(prefix+".relu1");
     Convolution(prefix+".conv2",1);
-    Online([&]{
+    Evaluate(InferencePhase::Graph,[&]{
       if(!projection) context_->LevelDown(skip,skip,1);
       context_->Add(ciphertext,ciphertext,skip);
     });
-    Add(reference,skip_ref); Add(exact,skip_exact); Check(prefix+".add");
+    timing.Cpu(InferencePhase::Reference,[&]{Add(reference,skip_ref);Add(exact,skip_exact);});Check(prefix+".add");
     Relu(prefix+".relu2");
   }
   void Classify() {
     std::unique_ptr<PackedLinear> pool,fc;
     PackedLinear* pooling=Cached("avgpool");
-    if(!pooling) {timing.weights+=Measure([&]{pool=MakePool(context_,reference,bs_);});pooling=pool.get();}
+    if(!pooling) {timing.Gpu(InferencePhase::WeightPrepare,[&]{pool=MakePool(context_,reference,bs_);});pooling=pool.get();}
     EvkRequest request; pooling->AddRequiredRotations(request); PrepareKeys(request);
-    Online([&]{pooling->Evaluate(ciphertext,ciphertext,client_.GetEvkMap());});
-    reference=Pool(reference); exact=Pool(exact); Check("avgpool");
+    Evaluate(InferencePhase::Linear,[&]{pooling->Evaluate(ciphertext,ciphertext,client_.GetEvkMap());});
+    timing.Cpu(InferencePhase::Reference,[&]{reference=Pool(reference);exact=Pool(exact);});Check("avgpool");
     const auto& w=model_->At("fc.weight"); const auto& b=model_->At("fc.bias");
     PackedLinear* classifier=Cached("fc");
-    if(!classifier) {timing.weights+=Measure([&]{fc=MakeClassifier(context_,w,b,bs_,range_);});classifier=fc.get();}
+    if(!classifier) {timing.Gpu(InferencePhase::WeightPrepare,[&]{fc=MakeClassifier(context_,w,b,bs_,range_);});classifier=fc.get();}
     request.clear(); classifier->AddRequiredRotations(request); PrepareKeys(request);
-    Online([&]{classifier->Evaluate(ciphertext,ciphertext,client_.GetEvkMap());});
-    reference=FC(reference,w,b); exact=FC(exact,w,b); Check("fc");
+    Evaluate(InferencePhase::Linear,[&]{classifier->Evaluate(ciphertext,ciphertext,client_.GetEvkMap());});
+    timing.Cpu(InferencePhase::Reference,[&]{reference=FC(reference,w,b);exact=FC(exact,w,b);});Check("fc");
   }
   int Prediction() {
     Pt pt; client_.Decrypt(pt,ciphertext); std::vector<Complex> out; context_->encoder_.Decode(out,pt);
@@ -313,23 +309,29 @@ class Runner {
   PackedLinear* Cached(const std::string& name) {auto it=resident_.find(name);return it==resident_.end()?nullptr:it->second.get();}
 };
 
-void EncodeProbe(std::shared_ptr<Boot> context, UserInterface<Word>& client) {
+void EncodeProbe(std::shared_ptr<Boot> context, UserInterface<Word>& client,InferenceTiming& timing) {
   for(int slots:{64,4096,kSlots}) for(int level:{0,2,8}) {
-    Message message(slots);
-    for(int i=0;i<slots;++i) message[i]=Complex(.9*std::sin(i*.13),.6*std::cos(i*.21));
+    Message message;timing.Cpu(InferencePhase::Input,[&]{
+      message.resize(slots);for(int i=0;i<slots;++i)message[i]=Complex(.9*std::sin(i*.13),.6*std::cos(i*.21));
+    });
     Pt p,d; Ct c; std::vector<Complex> out;
-    context->encoder_.Encode(p,level,context->param_.GetScale(level),message);
-    client.Encrypt(c,p); client.Decrypt(d,c); context->encoder_.Decode(out,d);
+    timing.Gpu(InferencePhase::Input,[&]{context->encoder_.Encode(p,level,context->param_.GetScale(level),message);client.Encrypt(c,p);});
+    timing.Gpu(InferencePhase::ValidationOutput,[&]{client.Decrypt(d,c);context->encoder_.Decode(out,d);
     double error=0;
     for(int i=0;i<slots;++i) error=std::max(error,std::abs(out[i]-message[i]));
     std::cout<<"ENCODE slots="<<slots<<" level="<<level<<" max_abs_error="<<error<<std::endl;
     Require(error<1e-6,"GPU encoding probe failed");
+    });
   }
 }
-void Reference(const Options& options,const Model& model) {
+void Reference(const Options& options,const Model& model,example::RunReport& report) {
   for(int image=options.start;image<options.start+options.count;++image) {
-    int label; auto input=ReadCifar(options.cifar,image,model,label);
-    Tensor poly=input,exact=input;
+    InferenceTiming timing;const auto begin=Clock::now();
+    {
+    int label;Tensor input(3,32);timing.Cpu(InferencePhase::Input,[&]{input=ReadCifar(options.cifar,image,model,label);});
+    Tensor poly(1,1),exact(1,1);
+    timing.Cpu(InferencePhase::Reference,[&]{
+    poly=input;exact=input;
     std::string current;
     auto conv=[&](const std::string& name,int stride){
       current=name;
@@ -351,35 +353,39 @@ void Reference(const Options& options,const Model& model) {
     }
     poly=FC(Pool(poly),model.At("fc.weight"),model.At("fc.bias"));
     exact=FC(Pool(exact),model.At("fc.weight"),model.At("fc.bias"));
+    });
+    timing.Cpu(InferencePhase::ValidationOutput,[&]{
     double error=0;for(int i=0;i<10;++i)error=std::max(error,std::abs(poly.values[i]-exact.values[i]));
     std::cout<<"REFERENCE image="<<image<<" label="<<label<<" polynomial_top1="<<Top1(poly)
              <<" relu_top1="<<Top1(exact)<<" polynomial_vs_relu="<<error<<std::endl;
+    });
+    }
+    report.AddImage(image,timing.Finish(begin));
   }
 }
 }  // namespace
 
 int main(int argc,char** argv) {
   example::RunReport report;
-  const auto process_begin=Clock::now();
   std::cout<<std::setprecision(12);
   try {
     const auto options=Parse(argc,argv);report.options=options.run;
     SetDiagnosticLogging(options.run.verbose);
     Model model{};
     if(!options.weights.empty()) model=LoadModel(options.weights);
-    if(options.mode=="reference") {auto begin=Clock::now();Reference(options,model);report.inference_ms+=example::RunMilliseconds(begin);report.complete=true;return 0;}
+    if(options.mode=="reference") {
+      Reference(options,model,report);report.complete=true;return 0;
+    }
     Encoder<Word>::SetGpuOnlyEncoding(true);
     const auto config=ResNetConfig(options.scale_bits);
-    const auto resolve_begin=Clock::now();
     const auto resolved=ResolveBootConfig<Word>(config);
-    const double resolve_ms=std::chrono::duration<double,std::milli>(Clock::now()-resolve_begin).count();
     Require(resolved.slot_count==kSlots && resolved.boot.GetEndLevel()==8 &&
             resolved.boot.GetStCStartLevel()==8+config.num_stc_levels,
             "resolved parameters do not match the ResNet schedule");
     std::unique_ptr<Parameter<Word>> param;
     std::shared_ptr<Boot> context;
     std::unique_ptr<UserInterface<Word>> client;
-    double init_ms=resolve_ms+Measure([&]{
+    Synchronized([&]{
       param=NewParametersFromLiteral(resolved.parameters);
       context=Boot::Create(*param,resolved.boot);
       MultiLevelCiphertext<Word>::StaticInit(*param,context->encoder_);
@@ -392,24 +398,20 @@ int main(int argc,char** argv) {
       <<"\n  Start / count: "<<options.start<<" / "<<options.count<<"\n  Mode / baby step: "<<options.mode<<" / "<<options.baby_step
       <<"\n  Requested encoding: "<<options.run.encoding<<"\n"<<std::flush;
     Runner runner(context,*client,&model,options.baby_step,options.relu_range,options.run);
-    if(options.mode=="full") {if(!options.run.Json())std::cout<<"Preparing model rotation keys...\n"<<std::flush;runner.PrepareModel();}
-    double prepare_ms=0;
-    const double model_keys_ms=runner.timing.keys;
+    if(!options.weights.empty()) {if(!options.run.Json())std::cout<<"Preparing model rotation keys...\n"<<std::flush;runner.PrepareModel();}
     if(options.mode!="conv" && options.mode!="encode") {
       if(!options.run.Json())std::cout<<"Preparing Boot resources...\n"<<std::flush;
-      prepare_ms=Measure([&]{runner.PrepareBoot();});report.boot_ms+=prepare_ms;
+      report.PrepareBoot(Sync,[&]{runner.PrepareBoot();});
     }
-    const double boot_keys_ms=runner.timing.keys-model_keys_ms;
-    const double setup_keys_ms=runner.timing.keys;
     if(options.mode=="full")runner.PrepareWeights();
-    const auto probe_begin=Clock::now();
-    if(options.mode=="encode") EncodeProbe(context,*client);
+    runner.timing.Reset();const auto probe_begin=Clock::now();
+    if(options.mode=="encode") EncodeProbe(context,*client,runner.timing);
     else if(options.mode=="relu" || options.mode=="boot") {
       Tensor probe(16,32);
-      for(size_t i=0;i<probe.values.size();++i) probe.values[i]=.99*options.relu_range*std::sin(i*.031);
+      runner.timing.Cpu(InferencePhase::Input,[&]{for(size_t i=0;i<probe.values.size();++i)probe.values[i]=.99*options.relu_range*std::sin(i*.031);});
       runner.Encrypt(probe);
       if(options.mode=="boot") {
-        runner.Online([&]{context->Boot(runner.ciphertext,runner.ciphertext,client->GetEvkMap());});
+        runner.Evaluate(InferencePhase::Bootstrap,[&]{context->Boot(runner.ciphertext,runner.ciphertext,client->GetEvkMap());});
         runner.Check("boot_probe");
       } else {
         auto expected=Pack(probe,options.relu_range);
@@ -431,16 +433,15 @@ int main(int argc,char** argv) {
         runner.Relu("relu_probe");
       }
     } else for(int image=options.start;image<options.start+options.count;++image) {
-      const auto inference_begin=Clock::now();
-      int label; auto input=ReadCifar(options.cifar,image,model,label);
-      const Timing previous=runner.timing;
+      runner.timing.Reset();const auto inference_begin=Clock::now();
+      {
+      int label;Tensor input(3,32);runner.timing.Cpu(InferencePhase::Input,[&]{input=ReadCifar(options.cifar,image,model,label);});
       const uint64_t previous_boots=runner.relu?runner.relu->BootCount():0;
       runner.max_error=0;
-      auto begin=Clock::now();
       if(options.mode=="projection") {
         const int stage=options.probe_stage;
         Tensor probe(stage==2?16:32,stage==2?32:16,stage==2?1:2);
-        for(size_t i=0;i<probe.values.size();++i) probe.values[i]=.8*std::sin(i*.071);
+        runner.timing.Cpu(InferencePhase::Input,[&]{for(size_t i=0;i<probe.values.size();++i)probe.values[i]=.8*std::sin(i*.071);});
         runner.Encrypt(probe);runner.Block(stage,0);
       } else {
         runner.Encrypt(input);runner.Convolution("stem",1);
@@ -454,7 +455,8 @@ int main(int argc,char** argv) {
         }
       }
       int prediction=-1;
-      if(options.mode=="full") {runner.Classify();prediction=runner.Prediction();}
+      if(options.mode=="full") {runner.Classify();runner.timing.Gpu(InferencePhase::ValidationOutput,[&]{prediction=runner.Prediction();});}
+      runner.timing.Cpu(InferencePhase::ValidationOutput,[&]{
       auto stats=Encoder<Word>::GetEncodingStats();
       size_t free=0,total=0;cudaMemGetInfo(&free,&total);
       if(options.run.Json()) {
@@ -466,15 +468,9 @@ int main(int argc,char** argv) {
         <<",\"final_slots\":"<<runner.ciphertext.GetNumSlots()
         <<",\"polynomial_top1\":"<<(options.mode=="full"?Top1(runner.reference):-1)
         <<",\"relu_top1\":"<<(options.mode=="full"?Top1(runner.exact):-1)
-        <<",\"max_abs_error\":"<<runner.max_error<<",\"init_ms\":"<<init_ms
-        <<",\"boot_prepare_ms\":"<<std::max(0.0,prepare_ms-boot_keys_ms)
-        <<",\"setup_keys_ms\":"<<setup_keys_ms<<",\"weights_ms\":"<<runner.timing.weights-previous.weights
-        <<",\"keys_ms\":"<<runner.timing.keys-previous.keys<<",\"input_ms\":"<<runner.timing.input-previous.input
-        <<",\"online_ms\":"<<runner.timing.online-previous.online<<",\"checks_ms\":"<<runner.timing.checks-previous.checks
-        <<",\"image_wall_ms\":"<<std::chrono::duration<double,std::milli>(Clock::now()-begin).count()
-        <<",\"process_wall_ms\":"<<std::chrono::duration<double,std::milli>(Clock::now()-process_begin).count()
+        <<",\"max_abs_error\":"<<runner.max_error
         <<",\"gpu_encode_calls\":"<<stats.gpu_vectors<<",\"gpu_constant_calls\":"<<stats.gpu_constants
-        <<",\"cpu_encode_attempts\":"<<stats.cpu_attempts<<",\"online_encode_calls\":"<<runner.online_encodes
+        <<",\"cpu_encode_attempts\":"<<stats.cpu_attempts<<",\"fhe_encode_calls\":"<<runner.fhe_encode_calls
         <<",\"boot_count\":"<<(runner.relu?runner.relu->BootCount()-previous_boots:0)
         <<",\"fhe_vs_polynomial_logits\":"<<runner.final_poly_error
         <<",\"fhe_vs_relu_logits\":"<<runner.final_relu_error
@@ -490,14 +486,16 @@ int main(int argc,char** argv) {
       std::cout<<"}"<<std::endl;
       } else example::PrintInference("ResNet"+std::to_string(model.depth),image,label,prediction,
           options.mode=="full"?runner.exact.values:std::vector<double>{},runner.logits,runner.max_error,runner.relu?runner.relu->BootCount()-previous_boots:0);
-      report.inference_ms+=example::RunMilliseconds(inference_begin);
+      });
+      }
+      report.AddImage(image,runner.timing.Finish(inference_begin));
     }
     if(options.mode=="encode"||options.mode=="boot"||options.mode=="relu")
-      report.inference_ms+=example::RunMilliseconds(probe_begin);
+      report.AddImage(-1,runner.timing.Finish(probe_begin));
     auto stats=Encoder<Word>::GetEncodingStats();
     Require(stats.cpu_attempts==0 && stats.gpu_vectors>0,"GPU-only encoding audit failed");
     if(options.run.Json()||options.run.verbose)std::cout<<"GPU_ONLY_PASS vectors="<<stats.gpu_vectors<<" constants="<<stats.gpu_constants
-             <<" cpu_attempts="<<stats.cpu_attempts<<" online_encodes="<<runner.online_encodes<<std::endl;
+             <<" cpu_attempts="<<stats.cpu_attempts<<" fhe_encode_calls="<<runner.fhe_encode_calls<<std::endl;
     report.complete=true;
     return 0;
   } catch(const std::exception& e) {

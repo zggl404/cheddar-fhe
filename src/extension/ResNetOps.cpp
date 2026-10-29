@@ -136,22 +136,31 @@ EvalReLU::EvalReLU(std::shared_ptr<Boot> context) : context_(std::move(context))
   }
   context_->encoder_.EncodeConstant(half_,3,context_->param_.GetScale(3),0.5);
 }
-void EvalReLU::Evaluate(Ct& output, const Ct& input, const EvkMap<Word>& keys) {
+void EvalReLU::Evaluate(Ct& output, const Ct& input, const EvkMap<Word>& keys, InferenceTiming* timing) {
   Ct original, sign, temporary, aligned;
-  context_->Boot(original,input,keys); ++boot_count_;
-  if(observer) observer("boot_input",original);
-  polynomials_[0].Evaluate(context_,temporary,original,keys.GetMultiplicationKey());
-  if(observer) observer("poly1",temporary);
-  polynomials_[1].Evaluate(context_,sign,temporary,keys.GetMultiplicationKey());
-  if(observer) observer("poly2",sign);
-  context_->Boot(temporary,sign,keys); ++boot_count_;
-  if(observer) observer("boot_sign",temporary);
-  polynomials_[2].Evaluate(context_,sign,temporary,keys.GetMultiplicationKey());
-  if(observer) observer("poly3_half",sign);
-  context_->Add(sign,sign,half_);
-  context_->LevelDown(aligned,original,3);
-  context_->HMult(output,aligned,sign,keys.GetMultiplicationKey(),true);
-  Require(context_->param_.NPToLevel(output.GetNP())==2, "ReLU output level mismatch");
-  context_->AssertSameScale(output.GetScale(),context_->param_.GetScale(2));
+  auto measure=[&](InferencePhase phase,auto function) {
+    if(timing)timing->Gpu(phase,function);else function();
+  };
+  auto observe=[&](const char* name,const Ct& ct) {
+    if(observer)measure(InferencePhase::ValidationOutput,[&]{observer(name,ct);});
+  };
+  measure(InferencePhase::Bootstrap,[&]{context_->Boot(original,input,keys);++boot_count_;});
+  observe("boot_input",original);
+  measure(InferencePhase::Activation,[&]{polynomials_[0].Evaluate(context_,temporary,original,keys.GetMultiplicationKey());});
+  observe("poly1",temporary);
+  measure(InferencePhase::Activation,[&]{polynomials_[1].Evaluate(context_,sign,temporary,keys.GetMultiplicationKey());});
+  observe("poly2",sign);
+  measure(InferencePhase::Bootstrap,[&]{context_->Boot(temporary,sign,keys);++boot_count_;});
+  observe("boot_sign",temporary);
+  measure(InferencePhase::Activation,[&]{polynomials_[2].Evaluate(context_,sign,temporary,keys.GetMultiplicationKey());});
+  observe("poly3_half",sign);
+  measure(InferencePhase::Activation,[&]{
+    context_->Add(sign,sign,half_);
+    context_->LevelDown(aligned,original,3);
+    context_->HMult(output,aligned,sign,keys.GetMultiplicationKey(),true);
+    Require(context_->param_.NPToLevel(output.GetNP())==2, "ReLU output level mismatch");
+    context_->AssertSameScale(output.GetScale(),context_->param_.GetScale(2));
+  });
 }
+
 }  // namespace cheddar::resnet

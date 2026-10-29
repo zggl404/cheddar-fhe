@@ -1,31 +1,81 @@
-"""Exercise the external timing boundary and failure propagation without CUDA."""
+"""CPU-only schema, command-default, warmup and process-boundary checks."""
+import copy
 import json
 from pathlib import Path
 import subprocess
 import sys
 import tempfile
 
+root = Path(__file__).resolve().parents[1]
+sys.path.insert(0, str(root / 'scripts'))
+from inference_timing import IMAGE_FIELDS, LEAF_FIELDS, summarize, validate_run
 
-root=Path(__file__).resolve().parents[1]
+
+def image(index):
+    value = 2.0 if index == 0 else 1.0
+    row = dict(image=index, schema_version=2, **{k: value for k in LEAF_FIELDS})
+    row.update(inference_ms=9.0 * value, fhe_eval_ms=4.0 * value)
+    return row
+
+
+images = [image(0), image(1)]
+row = dict(schema_version=2, **{k: sum(i[k] for i in images) for k in IMAGE_FIELDS},
+           model_prepare_ms=1.0, boot_prepare_ms=1.0, total_ms=29.0, images=images)
+validate_run(row)
+for key in ('linear_ms', 'reference_ms', 'dispatch_ms'):
+    bad = copy.deepcopy(row);bad[key] += 1
+    try: validate_run(bad)
+    except ValueError: pass
+    else: raise AssertionError(f'accepted broken sum: {key}')
+for version in (None, 1):
+    bad = copy.deepcopy(row);bad['schema_version'] = version
+    try: validate_run(bad)
+    except ValueError: pass
+    else: raise AssertionError('accepted incompatible schema')
+summary = summarize(images, 1)
+assert summary['measured_count'] == 1 and summary['mean_ms']['inference_ms'] == 9
+
 with tempfile.TemporaryDirectory(prefix='cheddar-launcher-test-') as temporary:
-    binary=Path(temporary)/'build/example/worker'
-    binary.parent.mkdir(parents=True)
-    binary.write_text('#!'+sys.executable+'\n'+'''import json,sys,time
+    folder = Path(temporary)
+    binary = folder / 'build/example/resnet_cifar';binary.parent.mkdir(parents=True)
+    binary.write_text('#!' + sys.executable + '\n' + '''import json,sys,time
 if '--fail' in sys.argv:raise SystemExit(7)
-time.sleep(.01)
 path=sys.argv[sys.argv.index('--timing-file')+1]
-open(path,'w').write(json.dumps(dict(model_prepare_ms=1,boot_prepare_ms=1,inference_ms=2,total_ms=4)))
+open(path+'.args','w').write(json.dumps(sys.argv))
+report=json.loads(''' + repr(json.dumps(row)) + ''')
+if '--bad-schema' in sys.argv:report['schema_version']=1
+if '--check-defaults' in sys.argv:
+    assert sys.argv[sys.argv.index('--relu-range')+1]=='24'
+    assert sys.argv[sys.argv.index('--weights')+1].endswith('/models/resnet110.bin')
+    assert sys.argv[sys.argv.index('--encode-mode')+1]=='auto'
+time.sleep(.04)
+open(path,'w').write(json.dumps(report))
 print('worker output')
 ''')
     binary.chmod(0o755)
-    command=[sys.executable,str(root/'scripts/run_inference.py'),'--binary',str(binary),'--log-format','json']
-    process=subprocess.run(command,text=True,capture_output=True)
-    assert process.returncode==0,process.stderr
-    timings=[json.loads(line[7:]) for line in process.stdout.splitlines() if line.startswith('TIMING ')]
-    assert len(timings)==1
-    row=timings[0]
-    assert abs(row['model_prepare_ms']+row['boot_prepare_ms']+row['inference_ms']-row['total_ms'])<1e-6
-    assert row['total_ms']>10 and row['process_overhead_ms']>0
-    failed=subprocess.run([*command,'--fail'],text=True,capture_output=True)
-    assert failed.returncode==7 and 'TIMING ' not in failed.stdout
+    command = [sys.executable, str(root/'scripts/run_inference.py'), '--binary', str(binary), '--count', '2', '--warmup', '1', '--log-format', 'json']
+    result = subprocess.run(command, text=True, capture_output=True)
+    assert result.returncode == 0, result.stderr
+    rows = [json.loads(s[7:]) for s in result.stdout.splitlines() if s.startswith('TIMING ')]
+    assert len(rows) == 1
+    actual = rows[0];actual['images'] = images;validate_run(actual)
+    assert actual['total_ms'] > 30 and actual['statistics']['warmup_count'] == 1
+    assert 'online_ms' not in actual and 'process_overhead_ms' not in actual
+    for option, code in (('--fail', 7), ('--bad-schema', 1)):
+        result = subprocess.run([*command, option, '1'], text=True, capture_output=True)
+        assert result.returncode == code and 'TIMING ' not in result.stdout, result
+    # Ordinary model selection needs no binary path or numerical tuning flags.
+    cnn = binary.with_name('cnn_cifar');cnn.write_text(binary.read_text());cnn.chmod(0o755)
+    for model, extra in (('resnet110', ['--check-defaults', '1']), ('vgg11', [])):
+        result = subprocess.run([sys.executable, str(root/'scripts/run_inference.py'), '--model', model, '--build-dir', str(folder/'build'), '--cifar', str(folder/'test_batch.bin'), '--count', '2', *extra], text=True, capture_output=True)
+        assert result.returncode == 0 and 'FHE evaluation' in result.stdout, result.stderr
+
+if len(sys.argv) > 1:
+    # Optional integration with the real C++ RunReport CPU worker.
+    result = subprocess.run([sys.executable, str(root/'scripts/run_inference.py'), '--binary', sys.argv[1], '--count', '2', '--warmup', '1', '--log-format', 'json'], text=True, capture_output=True)
+    assert result.returncode == 0, result.stderr
+    records = [json.loads(s[13:]) for s in result.stdout.splitlines() if s.startswith('IMAGE_TIMING ')]
+    total = next(json.loads(s[7:]) for s in result.stdout.splitlines() if s.startswith('TIMING '))
+    total['images'] = records;validate_run(total)
+    assert len(records) == 2 and records[0]['bootstrap_ms'] > 0 and records[0]['activation_ms'] > 0
 print('INFERENCE_LAUNCHER_TEST_PASS')

@@ -130,40 +130,7 @@ nonzero.
 
 ## Timing and validation
 
-The default output is a compact human-readable parameter/result table. Use
-`--verbose 1` for per-layer diagnostics, or `--log-format json` for PARAM,
-RESOURCES, RESULT and TIMING records. Validation scripts request JSON explicitly.
-
-`--encode-mode auto` first prepares all model rotation requests, then Boot
-switch/rotation keys and constants. It selects resident pre-encoded weights
-when the conservative budget fits; otherwise it uses streamed encoding.
-`pre` forces resident weights and fails on insufficient capacity; `stream`
-encodes layers during inference. Numerical checks remain enabled.
-
-Use `python scripts/run_inference.py --binary build/example/resnet_cifar ...`
-for three additive end-to-end wall categories: model resources/process overhead,
-Boot resources, and inference (input, FHE, validation/output, plus streamed
-encoding). Select one image with `--count 1`. The launcher includes its own and
-child-process startup/teardown; Linux clock ticks and final printing bound the
-small difference from external `time`. The old segmented `online_ms` remains
-a JSON diagnostic with a different boundary. See the [complete Chinese guide](../README.md).
-
-```sh
-python3 scripts/validate_resnet.py --binary build/example/resnet_cifar \
-  --models models --cifar /path/to/test_batch.bin --output validation/resnet \
-  --count 10
-```
-
-The validator stops at the first failure, preserves logs and exit codes, and
-writes a report containing source, binary, library, resolved-parameter, and data
-hashes. The parameter hash is SHA-256 of the `PARAM` object serialized with
-Python `json.dumps(sort_keys=True, separators=(',', ':'))`; it is not the hash
-of the historical AE JSON file. The validator requires identical resolved
-parameters across all stages, scale40, 16384 slots, and StC/Boot levels 12/8.
-It requires the full models to match both polynomial and exact-ReLU top-1
-predictions. An optional `--reference-json` additionally checks against an
-independent floating point implementation.
-
-The original five-depth validation predates the BSGS and pooling
-optimizations. The new tuning work is validated on ResNet20 on RTX 5090;
-larger depths need a fresh full validation before extending that claim.
+Use the [main guide](../README.md) to export and run models.
+All runners and scripts use timing schema_version=2: three additive run
+categories and exclusive inference components. See the
+[shared timing and validation specification](../docs/inference.md).

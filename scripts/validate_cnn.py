@@ -6,7 +6,8 @@ import json
 from pathlib import Path
 import subprocess
 import sys
-import time
+
+from inference_timing import validate_image, validate_run
 
 
 def sha(path):return hashlib.sha256(path.read_bytes()).hexdigest()
@@ -25,10 +26,10 @@ def main():
     if not 1<=args.count<=10000:parser.error('count must be in [1,10000]')
     args.output.mkdir(parents=True,exist_ok=True)
     root=Path(__file__).resolve().parents[1]
-    report=dict(status='RUNNING',cells=[],count=args.count,timing_role='streamed weight preparation, synchronized per-layer validation',
+    report=dict(status='RUNNING',cells=[],count=args.count,timing_schema_version=2,
                 binary_sha256=sha(args.binary),library_sha256=sha(args.binary.resolve().parents[1]/'libcheddar.so'),cifar_sha256=sha(args.cifar),
                 source_sha256={str(p.relative_to(root)):sha(p) for folder in ('include','src','example','scripts','tests')
-                               for p in sorted((root/folder).rglob('*')) if p.is_file() and p.suffix in ('.h','.cpp','.cu','.py','.txt')})
+                               for p in sorted((root/folder).rglob('*')) if p.is_file() and p.suffix in ('.h','.cuh','.cpp','.cu','.py','.txt')})
     report['source_sha256']['CMakeLists.txt']=sha(root/'CMakeLists.txt')
     report['hardware']=subprocess.check_output(['nvidia-smi','--query-gpu=name,memory.total,driver_version','--format=csv,noheader'],text=True).strip()
     def save():
@@ -41,8 +42,8 @@ def main():
             raise RuntimeError('independent reference source/data hash mismatch')
         command=[sys.executable,str(root/'scripts/run_inference.py'),'--binary',str(args.binary),'--log-format','json','--verbose','1','--encode-mode',args.encode_mode,'--weights',str(model),'--cifar',str(args.cifar),'--stop-after',str(stop),
                  '--count',str(count),'--relu-range',str(args.relu_range),'--channel-tile',str(args.channel_tile)]
-        cell=dict(name=name,command=command,model_sha256=sha(model),log=f'{name}.log',images=[])
-        report['cells'].append(cell);save();begin=time.monotonic();parameters=None;gpu_only=False
+        cell=dict(name=name,command=command,model_sha256=sha(model),log=f'{name}.log',images=[],image_timings=[])
+        report['cells'].append(cell);save();parameters=None;gpu_only=False
         with (args.output/cell['log']).open('w',buffering=1) as log:
             process=subprocess.Popen(command,stdout=subprocess.PIPE,stderr=subprocess.STDOUT,text=True)
             try:
@@ -50,15 +51,23 @@ def main():
                     log.write(line)
                     if line.startswith('PARAM '):parameters=json.loads(line[6:])
                     if line.startswith('GPU_ONLY_PASS '):gpu_only=True
+                    if line.startswith('IMAGE_TIMING '):
+                        timing=json.loads(line.removeprefix('IMAGE_TIMING '));validate_image(timing);cell['image_timings'].append(timing)
+                    if line.startswith('TIMING '):
+                        cell['timing']=json.loads(line.removeprefix('TIMING '))
                     if line.startswith('RESULT '):
                         row=json.loads(line[7:]);cell['images'].append(row)
-                        print(f"IMAGE cell={name} image={row['image']} error={row['max_abs_error']:.4g} online_ms={row['online_ms']:.3f}",flush=True)
+                        print(f"IMAGE cell={name} image={row['image']} error={row['max_abs_error']:.4g}",flush=True)
                 cell['exit_code']=process.wait()
             finally:
                 if process.poll() is None:process.terminate();process.wait()
-        cell['wall_seconds']=time.monotonic()-begin
         (args.output/f'{name}.exit').write_text(str(cell['exit_code'])+'\n')
         save()
+        if 'timing' not in cell or cell['timing'].get('schema_version') != 2 or not cell['image_timings']:
+            raise RuntimeError(f'{name}: missing unified timing records')
+        validate_run(dict(cell['timing'], images=cell['image_timings']))
+        if [t['image'] for t in cell['image_timings'] if t['image'] >= 0] != [r['image'] for r in cell['images']]:
+            raise RuntimeError(f'{name}: result/timing image mismatch')
         if cell['exit_code'] or len(cell['images'])!=count or not gpu_only or not parameters:
             raise RuntimeError(f'{name}: executable/encoding audit failed')
         if parameters['ring_dimension']!=131072 or parameters['slots']!=65536 or parameters['boot_output_level']!=8:
@@ -67,7 +76,7 @@ def main():
         report['parameters']=parameters
         report['parameter_sha256']=hashlib.sha256(json.dumps(parameters,sort_keys=True,separators=(',',':')).encode()).hexdigest()
         for row in cell['images']:
-            if row['status']!='PASS' or row['max_abs_error']>1e-2 or row['online_encode_calls']:
+            if row['status']!='PASS' or row['max_abs_error']>1e-2 or row['fhe_encode_calls']:
                 raise RuntimeError(f'{name}: ciphertext numerical/encoding audit failed')
             if not stop:
                 reference=golden['images'][row['image']]
@@ -75,10 +84,7 @@ def main():
                 row['cpp_vs_torch_error']=max(abs(a-b) for a,b in zip(row['relu_logits'],reference['logits']))
                 if row['cpp_vs_torch_error']>1e-7 or row['prediction']!=reference['prediction'] or row['prediction']!=row['polynomial_top1']:
                     raise RuntimeError(f'{name}: independent reference mismatch')
-        if not stop and count>1:
-            cell['warmup_image']=cell['images'][0]['image']
-            cell['measured_online_ms_mean']=sum(row['online_ms'] for row in cell['images'][1:])/(count-1)
-        cell['status']='PASS';save();print(f'CELL_PASS {name} wall_seconds={cell["wall_seconds"]:.2f}',flush=True)
+        cell['status']='PASS';save();print(f'CELL_PASS {name}',flush=True)
     try:
         for family in args.families:
             run(family,1,1)

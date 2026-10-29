@@ -12,17 +12,14 @@
 #include <stdexcept>
 #include <string>
 #include <vector>
+#include <utility>
+
+#include "../include/common/InferenceTiming.h"
 
 namespace cheddar::example {
-using RunClock = std::chrono::steady_clock;
-inline double RunMilliseconds(RunClock::time_point begin) {
-  return std::chrono::duration<double,std::milli>(RunClock::now()-begin).count();
-}
-
 struct RunOptions {
   std::string format="human", encoding="auto";
   std::string timing_file;
-  bool timing_summary=true;
   bool verbose=false;
   bool Parse(const std::string& key,const std::string& value) {
     if(key=="--log-format") {
@@ -32,10 +29,7 @@ struct RunOptions {
       if(value!="auto"&&value!="pre"&&value!="stream")throw std::runtime_error("encode-mode must be auto|pre|stream");
       encoding=value;
     } else if(key=="--timing-file")timing_file=value;
-    else if(key=="--timing-summary") {
-      if(value!="0"&&value!="1")throw std::runtime_error("timing-summary must be 0 or 1");
-      timing_summary=value=="1";
-    } else if(key=="--verbose") {
+    else if(key=="--verbose") {
       if(value!="0"&&value!="1")throw std::runtime_error("verbose must be 0 or 1");
       verbose=value=="1";
     } else return false;
@@ -44,50 +38,42 @@ struct RunOptions {
   bool Json() const { return format=="json"; }
 };
 
-struct RunTimes {
-  double model_prepare=0,boot_prepare=0,inference=0,total=0;
-};
-inline RunTimes SplitRunTimes(double total,double boot,double inference) {
-  if(boot<0||inference<0||total+1e-6<boot+inference)
-    throw std::runtime_error("overlapping run timing intervals");
-  return {std::max(0.0,total-boot-inference),boot,inference,total};
-}
-
-// Declared first in main: all model/context destructors run before this report.
-// The residual includes file loading, setup, host bookkeeping and teardown.
+// First local in main, so model/context destruction is included in the total.
 class RunReport {
  public:
   RunOptions options;
-  double boot_ms=0,inference_ms=0;
+  int64_t boot_ns=0;
+  InferenceTimes inference;
+  std::vector<std::pair<int,InferenceTimes>> images;
   bool complete=false;
-  ~RunReport() {
-    if(!complete)return;
-    const auto times=SplitRunTimes(RunMilliseconds(begin_),boot_ms,inference_ms);
-    if(!options.timing_file.empty()) {
-      std::ofstream file(options.timing_file);
-      file<<std::setprecision(17)<<"{\"model_prepare_ms\":"<<times.model_prepare
-          <<",\"boot_prepare_ms\":"<<times.boot_prepare<<",\"inference_ms\":"<<times.inference
-          <<",\"total_ms\":"<<times.total<<"}\n";
-      if(!file) {std::cerr<<"FAILED cannot write timing file\n";std::exit(EXIT_FAILURE);}
-    }
-    if(!options.timing_summary)return;
-    std::ostringstream out;out<<std::setprecision(12);
+  void AddImage(int image,const InferenceTimes& times) {
+    inference+=times;images.emplace_back(image,times);
     if(options.Json()) {
-      out<<"TIMING {\"model_prepare_ms\":"<<times.model_prepare
-         <<",\"boot_prepare_ms\":"<<times.boot_prepare<<",\"inference_ms\":"<<times.inference
-         <<",\"total_ms\":"<<times.total<<",\"boundary\":\"main through resource destruction\"}\n";
-    } else {
-      out<<std::fixed<<std::setprecision(3)<<"\nTiming (wall clock, ms)\n"
-         <<"  Model resources / process overhead : "<<times.model_prepare<<"\n"
-         <<"  Boot resources                     : "<<times.boot_prepare<<"\n"
-         <<"  Inference stage, all images        : "<<times.inference<<"\n"
-         <<"  Sum / process wall                 : "<<times.total<<"\n"
-         <<"  Inference includes input, FHE, validation/output and streamed encoding.\n";
+      std::cout<<"IMAGE_TIMING {\"image\":"<<image<<",";times.WriteFields(std::cout);std::cout<<"}\n"<<std::flush;
     }
-    std::cout<<out.str()<<std::flush;
+  }
+  template<class F> void PrepareBoot(void (*sync)(),F function) {
+    const auto begin=InferenceClock::now();sync();function();sync();boot_ns+=InferenceNanoseconds(begin);
+  }
+  ~RunReport() {
+    if(!complete||options.timing_file.empty())return;
+    try {
+      const auto total=InferenceNanoseconds(begin_),model=total-boot_ns-inference.total_ns;
+      if(model<0)throw std::runtime_error("overlapping run timing intervals");
+      std::ofstream out(options.timing_file);
+      out<<"{";inference.WriteFields(out);
+      out<<",\"model_prepare_ms\":"<<InferenceMilliseconds(model)<<",\"boot_prepare_ms\":"<<InferenceMilliseconds(boot_ns)
+         <<",\"total_ms\":"<<InferenceMilliseconds(total)<<",\"images\":[";
+      for(size_t i=0;i<images.size();++i) {
+        if(i)out<<",";
+        out<<"{\"image\":"<<images[i].first<<",";images[i].second.WriteFields(out);out<<"}";
+      }
+      out<<"]}\n";
+      if(!out)throw std::runtime_error("cannot write timing file");
+    } catch(const std::exception& e) {std::cerr<<"FAILED timing: "<<e.what()<<"\n";std::exit(EXIT_FAILURE);}
   }
  private:
-  RunClock::time_point begin_=RunClock::now();
+  InferenceClock::time_point begin_=InferenceClock::now();
 };
 
 inline void PrintInference(const std::string& model,int image,int label,int prediction,
