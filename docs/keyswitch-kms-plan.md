@@ -8,8 +8,8 @@
 - 基线：`2b4646129ba2bac599efbab5ff073b6ef9c78917`，来自 `feature/cnn-decomposition-gpu96`。
 - 三项功能按下述顺序形成 **三个独立 Git commit**；每个提交保持可编译、可运行。
 - 本计划随第一个功能提交保存，后续在相应功能提交中更新状态和验证记录，不另建计划提交。
-- 前两个功能已实现：计时完成 28 次整网验证，KMS 完成 9 次整网及针对性 GPU 验证；拆分待完成。
-- `--ks-profile`、`--key-mode`、`--key-dir` 已实现；拆分参数待实现。
+- 三项功能与全部十个模型最终验证已完成：85 个配置、225 次整网推理通过；本页随第三项提交。
+- 文中四个运行参数均已实现，最终数值与限制见[48 GB 实测报告](keyswitch-kms-gpu48.md)。
 - 用户已同意：KMS 在准备阶段加载全部所需密钥；融合拆分允许变慢；全部模型都要验证正确性。
 - 用户已授权：所有工作完成、结果回传后，关闭本页指定的服务器。
 
@@ -204,10 +204,11 @@ VGG11     VGG16     MobileNet  SqueezeNet  AlexNet
 - [x] 核对 48 GB 服务器、模型、数据、工具链和可用空间。
 - [x] 完成 commit 1：三分类计时与验证（提交 SHA 见 Git 历史）。
 - [x] 完成 commit 2：KMS 保存/全量加载与验证（提交 SHA 见 Git 历史）。
-- [ ] 完成 commit 3：Hybrid 拆分与验证。
-- [ ] 完成全部十个模型的最终矩阵与正确性报告。
-- [ ] 回传并核验代码、日志、结果和复现清单。
-- [ ] 关闭指定服务器并记录实际停机验证结果。
+- [x] 完成 commit 3：Hybrid 拆分与验证（本次提交）。
+- [x] 完成全部十个模型的最终矩阵与正确性报告（85 配置 / 225 次整网推理）。
+- [x] 回传并核验代码、日志、结果和复现清单；源码 109 个文件与实际测试版本逐一核对。
+- 收尾顺序：最终提交/推送和归档核验后执行指定服务器关机；实际执行与复查状态以
+  本地 `validation/ks-kms-20261030/shutdown-verification.json` 为准（提交后生成）。
 
 ## 已确认的实施取舍
 
@@ -218,3 +219,40 @@ VGG11     VGG16     MobileNet  SqueezeNet  AlexNet
 
 - 第二项采用 4 MiB staged I/O、非认证的损坏 checksum 和同盘目录原子发布；没有加入 GDS/并行 I/O/压缩。
   save 模式保存后继续推理验证，额外导出费用归模型准备；详见[KMS 文档](kms.md)。
+
+- 第三项保留同类融合，拆开跨类别融合。Boot 从相同短基代表元分别生成 Q/P，
+  明确共享 INTT 归非切换、P 扩展归切换。启用回退路径时修正首项写回与别名问题；
+  N16/N17 的 Q/QP、1/2/10 项、额外别名项和完整 Boot 均已通过。
+
+## 运行现场与恢复入口
+
+- 已有提交：`dca81b6`（三分类计时）、`3672828`（KMS）。第三项随本页提交；完整三次提交 SHA 见 Git 历史。
+- 服务器工作目录：`/root/autodl-tmp/ks-kms`，源码 `src/`，构建 `build/`，权重 `models/`。
+- 远程进度：`results/final-progress.log`；逐配置原始日志、内存采样和 JSON 为 `results/final/`。
+- 本地证据目录：`validation/ks-kms-20261030/`；包含 commit1/commit2/final、GPU 单元日志、
+  `verified-inputs.json` 及矩阵脚本。原始证据保持 Git 忽略，摘要进入文档。
+- 最终矩阵脚本：本地 `validation/ks-kms-20261030/run_matrix.py`，远程工作目录下同名文件。
+- 环境 PATH：`/usr/local/cuda/bin:/root/miniconda3/bin:$PATH`；CMake 架构 89，RMM branch-22.12。
+- 每个模型 A/C/D/E 为核心对照，B 保存、F 无采集拆分；ResNet20 补齐其他开关组合。
+  严格组每核心配置 1 张预热加 5 张正式图，大模型每核心配置同样的 2 张完整图。
+- 当前参考复用此前独立 ONNX/PyTorch float64 结果，并已重新核对全部十个原始 ONNX、
+  FP32 权重、CIFAR 与参考文件的哈希；每次整网仍逐 logits 比较普通 ReLU 明文输出。
+- 已读取服务器 `/usr/bin/shutdown`：平台脚本会停止容器的 supervisord；归档和核验前不调用。
+
+- 主矩阵中 ResNet56 的 auto 保守预算选择 stream；主矩阵结束后已补跑
+  `run_pre_resnet56.py resnet56` 强制 pre 的严格 A–F 矩阵，判断是否实际能全量常驻。
+  补测结果在 `results/final-pre-resnet56/`，与原 stream 结果分别归档。
+
+- 已核对 [AutoDL 官方自动关机说明](https://www.autodl.com/docs/save_money/)：使用平台专用
+  `/usr/bin/shutdown`。归档后调用，保留执行记录和后续连接状态。
+
+## 最终验证结论
+
+- 主矩阵 78 配置 / 198 次整网推理通过；ResNet56 强制 pre 补测 7 配置 / 27 次通过。
+- 六个模型采用严格 pre：ResNet20/32/44/56、MobileNet、AlexNet。
+  ResNet110、VGG11/16、SqueezeNet 采用 stream，全部 key 仍提前加载，精度门槛不降低。
+- 所有 load 生成次数为 0；所有拆分采集 Hybrid 次数/耗时为 0；整数纳秒加和误差为 0。
+- Boot 日程保持不变；全部测试 top-1 与两条明文及独立 ONNX 参考一致。
+- 普通人类可读日志另完成一张 ResNet20 拆分推理，正常显示参数、10 类输出和两类时间。
+- 所有实际测试源码与工作区 109 个文件哈希一致；GPU 二进制、构建记录与原始证据已打包，
+  本地逐文件核验后执行发布和平台关机。

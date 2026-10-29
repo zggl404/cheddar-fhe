@@ -249,7 +249,7 @@ int main(int argc,char** argv) {
       config.multiplicative_depth=9;config.normal_scale_bits=options.scale_bits;config.boot_scale_bits=58;
       config.first_modulus_bits=options.scale_bits==40?50:56;config.auxiliary_modulus_bits=options.scale_bits==40?341:403;
       config.num_stc_levels=options.scale_bits==40?4:3;
-      Synchronized([&]{auto resolved=ResolveBootConfig<Word>(config);param=NewParametersFromLiteral(resolved.parameters);
+      Synchronized([&]{auto resolved=ResolveBootConfig<Word>(config);param=NewParametersFromLiteral(resolved.parameters);param->split_hybrid_=options.run.split_hybrid;
         context=Boot::Create(*param,resolved.boot);MultiLevelCiphertext<Word>::StaticInit(*param,context->encoder_);client=std::make_unique<UserInterface<Word>>(context,true,options.run.key_mode,options.run.key_directory);});
       if(options.run.Json()) {
       std::cout<<"PARAM {\"ring_dimension\":"<<param->degree_<<",\"slots\":"<<options.slots
@@ -275,7 +275,7 @@ int main(int argc,char** argv) {
         <<"\n  Requested encoding: "<<options.run.encoding<<"\n"<<std::flush;
     }
     Runner runner(options,model,context,client.get());
-    runner.timing.SetProfiling(options.run.ks_profile);
+    runner.timing.SetProfiling(options.run.ks_profile);runner.timing.SetSplitHybrid(options.run.split_hybrid);
     if(context) {
       if(!options.run.Json())std::cout<<"Preparing model rotation keys...\n"<<std::flush;
       runner.PrepareModel();

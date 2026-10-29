@@ -110,6 +110,8 @@ class ElementWiseHandler {
 
   // Special functions, only use it when you know what you are doing
   void ModUpToMax(DvView<word> &dst, const DvConstView<word> &src1) const;
+  // Extend the same bootstrap base representative to P only (diagnostic path).
+  void ModUpToAux(DvView<word> &dst, const DvConstView<word> &src1) const;
 
   void MultImaginaryUnit(std::vector<DvView<word>> &dst, const NPInfo &np,
                          const std::vector<DvConstView<word>> &src1,

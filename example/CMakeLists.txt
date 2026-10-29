@@ -1,3 +1,5 @@
+add_executable(hybrid_split_test ../tests/hybrid_split_test.cpp)
+target_link_libraries(hybrid_split_test PRIVATE cheddar)
 add_executable(key_store_test ../tests/key_store_test.cpp)
 target_link_libraries(key_store_test PRIVATE cheddar)
 add_executable(inference_run_test ../tests/inference_run_test.cpp)

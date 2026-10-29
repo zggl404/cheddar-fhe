@@ -25,13 +25,13 @@ int main(int argc,char** argv) {
     }
     report.PrepareBoot(Sync,Work);
     InferenceTiming timer(Sync);
-    timer.SetProfiling(report.options.ks_profile);
+    timer.SetProfiling(report.options.ks_profile);timer.SetSplitHybrid(report.options.split_hybrid);
     for(int image=0;image<count;++image) {
       timer.Reset();auto begin=InferenceClock::now();
       timer.Cpu(InferencePhase::Input,Work);
-      timer.Gpu(InferencePhase::Bootstrap,[]{
+      timer.Gpu(InferencePhase::Bootstrap,[&]{
         ProfileScope key(ProfileOp::KeyMult);Work();
-        {ProfileScope hybrid(ProfileOp::ModDownRescale);Work();}
+        {ProfileScope part(report.options.split_hybrid?ProfileOp::ModDown:ProfileOp::ModDownRescale);Work();}
         Work();
       });
       timer.Gpu(InferencePhase::Activation,Work);
@@ -82,6 +82,7 @@ int main(int argc,char** argv) {
   assert(sync_calls-before==6&&traced.operations.Keyswitch()>0&&traced.operations.Hybrid()>0);
   assert(traced.operations.calls[static_cast<size_t>(ProfileOp::KeyMult)]==2);
   assert(traced.operations.Keyswitch()+traced.operations.Hybrid()<=traced.total_ns);
+  traced.split_hybrid=true;rejected=false;try {traced.Validate();}catch(const std::runtime_error&){rejected=true;}assert(rejected);
   profiled.Reset();
   try {profiled.Gpu(InferencePhase::Linear,[]{ProfileScope key(ProfileOp::ModUp);throw std::runtime_error("probe");});}
   catch(const std::runtime_error&){}

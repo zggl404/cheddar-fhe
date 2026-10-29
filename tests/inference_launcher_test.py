@@ -85,6 +85,10 @@ if len(sys.argv) > 1:
     total['images'] = records;validate_run(total)
     assert total['keyswitch_ns'] > 0 and total['hybrid_ns'] > 0
     assert total['inference_ns'] == sum(r['inference_ns'] for r in records)
+    split_result = subprocess.run([sys.executable, str(root/'scripts/run_inference.py'), '--binary', sys.argv[1], '--count', '2', '--ks-profile', 'on', '--split-hybrid', 'on', '--log-format', 'json'], text=True, capture_output=True)
+    assert split_result.returncode == 0, split_result.stderr
+    split_total = next(json.loads(s[7:]) for s in split_result.stdout.splitlines() if s.startswith('TIMING '))
+    assert split_total['split_hybrid'] and split_total['hybrid_ns'] == 0
     bad = copy.deepcopy(total);bad['keyswitch_ns'] += 1
     try: validate_run(bad)
     except ValueError: pass

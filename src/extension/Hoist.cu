@@ -657,7 +657,7 @@ void HoistHandler<word>::EvaluateBabyStep(ConstContextPtr<word> context,
   // it reduces the number of global memory reads/writes for the intermediate
   // results and ModUp(a).
   bool can_fuse_bs = beta <= (1 << max_log_beta_);
-  if (kFuseBSKeyMult && can_fuse_bs) {
+  if (kFuseBSKeyMult && !context->param_.split_hybrid_ && can_fuse_bs) {
     std::vector<int> rotations;
     for (const auto &bs_idx : bs_indices_) {
       if (bs_idx != 0) {

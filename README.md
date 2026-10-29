@@ -10,7 +10,7 @@
 Python 3.10/3.11、CUDA 12.8、Blackwell GPU 为例；其他 GPU 的配置见[详细文档](docs/inference.md)。
 
 ```bash
-git clone --branch feature/cnn-decomposition-gpu96 https://github.com/zggl404/cheddar-fhe.git
+git clone --branch feature/keyswitch-profile-kms https://github.com/zggl404/cheddar-fhe.git
 cd cheddar-fhe
 
 # root 用户可以去掉 sudo。
@@ -110,6 +110,10 @@ python scripts/run_inference.py --model vgg11 --cifar "$CIFAR_BIN" --count 6 --w
 
 密钥可通过 `--key-mode save|load --key-dir /data/keys/模型名` 预生成保存并在后续运行加载，
 默认仍为 `generate`，详见[KMS 使用说明](docs/kms.md)。
+
+需要拆开融合操作、只看 Keyswitch 与 Non-keyswitch 时，组合使用
+`--split-hybrid on --ks-profile on`。默认不拆分；拆分会增加运行时间，详见[诊断模式](docs/keyswitch-profiling.md#hybrid-拆分诊断模式)。
+十个模型的开关、精度、时间和显存验证见[48 GB 实测报告](docs/keyswitch-kms-gpu48.md)。
 
 默认分行显示参数、资源模式、每个类别的精确 ReLU 明文输出、FHE 解密输出，
 以及最大/平均绝对误差。逐层诊断默认收起，数值校验仍然执行；失败会返回非零状态。

@@ -36,6 +36,8 @@ def validate_image(row):
         if row['inference_ns'] != row['keyswitch_ns'] + row['non_keyswitch_ns'] + row['hybrid_ns']:
             raise ValueError('operation wall-clock nanoseconds do not sum')
         ops = row['profile_operations']
+        if row.get('split_hybrid', False) and any(ops[k]['ns'] or ops[k]['calls'] for k in HYBRID_OPS):
+            raise ValueError('hybrid operation remains in split execution')
         for name in (*KEY_OPS, *HYBRID_OPS):
             for key in ('ns', 'calls'):
                 if type(ops[name][key]) is not int or ops[name][key] < 0:
@@ -65,6 +67,8 @@ def validate_run(row):
         raise ValueError('invalid image index in timing report')
     if len({image['image'] for image in images}) != len(images):
         raise ValueError('duplicate image timing')
+    if any(image.get('split_hybrid', False) != row.get('split_hybrid', False) for image in images):
+        raise ValueError('mixed execution modes')
     if any(image.get('ks_profile', False) != row.get('ks_profile', False) for image in images):
         raise ValueError('mixed operation profiling modes')
     fields = (*IMAGE_FIELDS, *PROFILE_FIELDS) if row.get('ks_profile', False) else IMAGE_FIELDS
@@ -114,7 +118,7 @@ def print_human(row):
         print(f'    {label:34}: {row[key]:.3f}')
     if row.get('ks_profile', False):
         print('\n  Inference by operation (same stage; synchronized profiling)')
-        for key in PROFILE_FIELDS:
+        for key in PROFILE_FIELDS[:2] if row.get('split_hybrid', False) else PROFILE_FIELDS:
             print(f'    {key:34}: {row[key]:.3f}')
     print(f"  Sum / end-to-end wall                : {row['total_ms']:.3f}")
     if row['image_count'] > 1 or summary['warmup_count']:

@@ -229,17 +229,27 @@ void BootContext<word>::ModUpToMax(Ct &res, const Ct &input,
   this->elem_handler_.ModUpToMax(tmp_bx_view, res.BxConstView());
   this->ntt_handler_.NTT(tmp_bx_view, max_level_np, tmp_bx.ConstView(0), true);
 
-  // ModUpToMax(ax)
-  {
-  ProfileScope profile(sse?ProfileOp::SharedLift:ProfileOp::Other);
+  // Fused mode shares the ax lift/NTT across Q and P. Diagnostic mode keeps
+  // the bootstrap INTT/Q lift in Non-keyswitch and extends/NTTs P separately
+  // for StD. Both use the identical centered short-base representative.
   max_level_np.num_aux_ = tmp_ax_num_aux;
-  this->ntt_handler_.INTTAndMultConst(res_ax_view, np,
-                                      working_ct->AxConstView(),
-                                      mod_max_intt_const_.ConstView(0));
-  this->elem_handler_.ModUpToMax(tmp_ax_view, res.AxConstView());
-  this->ntt_handler_.NTT(tmp_ax_view, max_level_np,
-                         tmp_ax.ConstView(tmp_ax_num_aux * degree), true);
-
+  if(sse&&this->param_.split_hybrid_) {
+    this->ntt_handler_.INTTAndMultConst(res_ax_view,np,working_ct->AxConstView(),mod_max_intt_const_.ConstView(0));
+    NPInfo q_np=max_level_np;q_np.num_aux_=0;
+    DvView<word> q_view(tmp_ax.data(),L*degree,0);
+    this->elem_handler_.ModUpToMax(q_view,res.AxConstView());
+    this->ntt_handler_.NTT(q_view,q_np,DvConstView<word>(q_view),true);
+    {
+      ProfileScope profile(ProfileOp::ModUp);
+      DvView<word> p_view(tmp_ax.data()+L*degree,alpha*degree,alpha*degree);
+      this->elem_handler_.ModUpToAux(p_view,res.AxConstView());
+      this->ntt_handler_.NTT(p_view,NPInfo(0,0,alpha),DvConstView<word>(p_view),true);
+    }
+  } else {
+    ProfileScope profile(sse?ProfileOp::SharedLift:ProfileOp::Other);
+    this->ntt_handler_.INTTAndMultConst(res_ax_view,np,working_ct->AxConstView(),mod_max_intt_const_.ConstView(0));
+    this->elem_handler_.ModUpToMax(tmp_ax_view,res.AxConstView());
+    this->ntt_handler_.NTT(tmp_ax_view,max_level_np,tmp_ax.ConstView(tmp_ax_num_aux*degree),true);
   }
 
   if (sse) {

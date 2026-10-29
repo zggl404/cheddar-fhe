@@ -120,6 +120,16 @@ C++ 的内部计时文件用于外层汇总，不能作为独立进程端到端�
 所以均值保持加法关系；仅 inference_ms、fhe_eval_ms 另外提供中位数，它们不用于拼接总量。
 不同编码模式、硬件、日志级别、参数、图片集合应分别记录。
 
+## 可选的操作分类与离线密钥
+
+`--ks-profile on` 按相同的完整 `inference_ms` 父区间报告 Keyswitch、Non-keyswitch、Hybrid；
+`--split-hybrid on` 切换到诊断执行，配合采集将 Hybrid 拆为两类。二者默认关闭，
+开启采集会同步、拆分会增加执行与临时空间开销，详见[边界和实测](keyswitch-profiling.md)。
+这些分类与原阶段子项是并列视角，不是额外相加的一段时间。
+
+`--key-mode save|load --key-dir DIR` 支持预先保存、准备阶段加载全部实际密钥，
+默认 `generate`。加载过程计入现有准备阶段，详见[KMS 约定](kms.md)。
+
 ## 日志和调试
 
 ```bash

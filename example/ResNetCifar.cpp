@@ -385,7 +385,7 @@ int main(int argc,char** argv) {
     std::shared_ptr<Boot> context;
     std::unique_ptr<UserInterface<Word>> client;
     Synchronized([&]{
-      param=NewParametersFromLiteral(resolved.parameters);
+      param=NewParametersFromLiteral(resolved.parameters);param->split_hybrid_=options.run.split_hybrid;
       context=Boot::Create(*param,resolved.boot);
       MultiLevelCiphertext<Word>::StaticInit(*param,context->encoder_);
       client=std::make_unique<UserInterface<Word>>(context,true,options.run.key_mode,options.run.key_directory);
@@ -397,7 +397,7 @@ int main(int argc,char** argv) {
       <<"\n  Start / count: "<<options.start<<" / "<<options.count<<"\n  Mode / baby step: "<<options.mode<<" / "<<options.baby_step
       <<"\n  Requested encoding: "<<options.run.encoding<<"\n"<<std::flush;
     Runner runner(context,*client,&model,options.baby_step,options.relu_range,options.run);
-    runner.timing.SetProfiling(options.run.ks_profile);
+    runner.timing.SetProfiling(options.run.ks_profile);runner.timing.SetSplitHybrid(options.run.split_hybrid);
     if(!options.weights.empty()) {if(!options.run.Json())std::cout<<"Preparing model rotation keys...\n"<<std::flush;runner.PrepareModel();}
     if(options.mode!="conv" && options.mode!="encode") {
       if(!options.run.Json())std::cout<<"Preparing Boot resources...\n"<<std::flush;

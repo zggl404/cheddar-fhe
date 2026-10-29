@@ -25,6 +25,7 @@ struct InferenceTimes {
   int64_t total_ns=0;
   std::array<int64_t,kInferencePhases> phases{};
   OperationTimes operations;
+  bool split_hybrid=false;
   int64_t Classified() const { int64_t n=0;for(auto v:phases)n+=v;return n; }
   int64_t Dispatch() const { return total_ns-Classified(); }
   int64_t Fhe() const { return phases[2]+phases[3]+phases[4]+phases[5]; }
@@ -33,10 +34,14 @@ struct InferenceTimes {
     for(auto v:phases)if(v<0)throw std::runtime_error("negative inference timing interval");
     if(operations.Keyswitch()<0||operations.Hybrid()<0||operations.Keyswitch()+operations.Hybrid()>total_ns)
       throw std::runtime_error("overlapping operation timing intervals");
+    if(split_hybrid&&operations.enabled)for(size_t i=static_cast<size_t>(ProfileOp::FusedBaby);i<kProfileOps;++i)
+      if(operations.calls[i]||operations.ns[i])throw std::runtime_error("hybrid operation remains in split execution");
   }
   InferenceTimes& operator+=(const InferenceTimes& other) {
     other.Validate();
     if(total_ns&&operations.enabled!=other.operations.enabled)throw std::runtime_error("mixed profiling modes in one report");
+    if(total_ns&&split_hybrid!=other.split_hybrid)throw std::runtime_error("mixed execution modes in one report");
+    split_hybrid=other.split_hybrid;
     operations.enabled=other.operations.enabled;
     for(size_t i=0;i<kProfileOps;++i){operations.ns[i]+=other.operations.ns[i];operations.calls[i]+=other.operations.calls[i];}
     total_ns+=other.total_ns;
@@ -49,6 +54,7 @@ struct InferenceTimes {
     for(size_t i=0;i<phases.size();++i)out<<",\""<<kInferenceFields[i]<<"\":"<<InferenceMilliseconds(phases[i]);
     out<<",\"fhe_eval_ms\":"<<InferenceMilliseconds(Fhe())<<",\"dispatch_ms\":"<<InferenceMilliseconds(Dispatch());
     out<<",\"ks_profile\":"<<(operations.enabled?"true":"false");
+    out<<",\"split_hybrid\":"<<(split_hybrid?"true":"false");
     if(operations.enabled) {
       const auto key=operations.Keyswitch(),hybrid=operations.Hybrid(),non=total_ns-key-hybrid;
       out<<",\"profile_method\":\"synchronized_scopes\",\"inference_ns\":"<<total_ns
@@ -70,18 +76,21 @@ class InferenceTiming {
  public:
   explicit InferenceTiming(void (*synchronize)()=nullptr):synchronize_(synchronize){}
   void SetProfiling(bool enabled) {profile_enabled_=enabled;}
+  void SetSplitHybrid(bool enabled) {split_hybrid_=enabled;}
   void Reset() { if(active_)throw std::runtime_error("reset during inference interval");times_={};profile_.Start(profile_enabled_,synchronize_); }
   template<class F> void Cpu(InferencePhase phase,F function) { Record(phase,false,function); }
   template<class F> void Gpu(InferencePhase phase,F function) { Record(phase,true,function); }
   InferenceTimes Finish(InferenceClock::time_point begin) {
     if(active_)throw std::runtime_error("unfinished inference interval");
-    auto result=times_;result.operations=profile_.Finish();result.total_ns=InferenceNanoseconds(begin);result.Validate();return result;
+    auto result=times_;result.operations=profile_.Finish();result.split_hybrid=split_hybrid_;
+    result.total_ns=InferenceNanoseconds(begin);result.Validate();return result;
   }
  private:
   InferenceTimes times_;
   void (*synchronize_)();
   bool active_=false;
   bool profile_enabled_=false;
+  bool split_hybrid_=false;
   OperationProfile profile_;
   template<class F> void Record(InferencePhase phase,bool gpu,F function) {
     const auto index=static_cast<size_t>(phase);

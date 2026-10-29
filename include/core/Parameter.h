@@ -62,6 +62,9 @@ class Parameter {
   const int default_encryption_level_;
   const int max_level_;
 
+  // Diagnostic execution dispatch; does not change CKKS parameters or keys.
+  bool split_hybrid_=false;
+
   const std::vector<word> main_primes_;
   const std::vector<word> ter_primes_;
   const std::vector<word> aux_primes_;

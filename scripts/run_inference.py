@@ -42,6 +42,7 @@ def main():
     parser.add_argument('--encode-mode', choices=('auto', 'pre', 'stream'), default='auto')
     parser.add_argument('--key-mode', choices=('generate', 'save', 'load'), default='generate')
     parser.add_argument('--key-dir', type=Path)
+    parser.add_argument('--split-hybrid', choices=('off', 'on'), default='off')
     parser.add_argument('--ks-profile', choices=('off', 'on'), default='off')
     parser.add_argument('--log-format', choices=('human', 'json'), default='human')
     args, options = parser.parse_known_args()
@@ -67,7 +68,7 @@ def main():
         options += ['--cifar', str(args.cifar.expanduser().resolve())]
     if args.model and '--relu-range' not in options:
         options += ['--relu-range', {'resnet56': '12', 'resnet110': '24'}.get(args.model, '10')]
-    options += ['--count', str(args.count), '--encode-mode', args.encode_mode, '--log-format', args.log_format, '--ks-profile', args.ks_profile]
+    options += ['--count', str(args.count), '--encode-mode', args.encode_mode, '--log-format', args.log_format, '--ks-profile', args.ks_profile, '--split-hybrid', args.split_hybrid]
     env = dict(os.environ)
     env['LD_LIBRARY_PATH'] = str(binary.parents[1]) + ':' + env.get('LD_LIBRARY_PATH', '')
     try:

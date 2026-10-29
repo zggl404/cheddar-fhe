@@ -1005,57 +1005,34 @@ void ElementWiseHandler<word>::PermuteAccum(
     std::vector<DvView<word>> &dst, const NPInfo &np,
     const std::vector<int> &permute_amounts,
     const std::vector<std::vector<DvConstView<word>>> &srcs) const {
-  if (kOptimizeAutomorphism) {
+  if (kOptimizeAutomorphism && !param_.split_hybrid_) {
     PermuteAccumWorker(dst, np, permute_amounts, srcs);
     return;
   }
-
-  // Naive repetition of Permute and add
-  int num_poly = dst.size();
-  int num_accum = permute_amounts.size();
-
-  bool has_extra_ct = (static_cast<int>(srcs.size()) == num_accum + 1);
-  AssertTrue(num_accum == static_cast<int>(srcs.size()) || has_extra_ct,
-             "PermuteAccum: Incompatible srcs/permute_amounts size");
-
-  std::vector<DeviceVector<word>> tmp;
-  std::vector<DvView<word>> tmp_view;
-  std::vector<DvConstView<word>> tmp_const_view;
-  std::vector<DvConstView<word>> dst_const_view;
-  for (int i = 0; i < num_poly; i++) {
-    tmp.emplace_back(dst.at(i).TotalSize());
-    tmp_view.push_back(tmp.at(i).View(dst.at(i).AuxSize()));
-    tmp_const_view.push_back(tmp.at(i).ConstView(dst.at(i).AuxSize()));
-    dst_const_view.emplace_back(dst.at(i));
+  // Keep dst untouched until all sources have been read, including an aliased
+  // unrotated extra term. The old sensitivity-study fallback failed to copy
+  // the first permuted result when no extra term was supplied.
+  const int num_poly=dst.size(),num_accum=permute_amounts.size();
+  const bool extra=srcs.size()==size_t(num_accum+1);
+  AssertTrue(num_poly>0&&num_accum>0&&(srcs.size()==size_t(num_accum)||extra),"invalid split PermuteAccum input");
+  AssertNPMatch(dst,np);
+  std::vector<DeviceVector<word>> tmp,sum;
+  std::vector<DvView<word>> tmp_view,sum_view;
+  std::vector<DvConstView<word>> tmp_const,sum_const;
+  for(int j=0;j<num_poly;++j) {
+    tmp.emplace_back(dst[j].TotalSize());sum.emplace_back(dst[j].TotalSize());
+    tmp_view.push_back(tmp.back().View(dst[j].AuxSize()));sum_view.push_back(sum.back().View(dst[j].AuxSize()));
+    tmp_const.push_back(tmp.back().ConstView(dst[j].AuxSize()));sum_const.push_back(sum.back().ConstView(dst[j].AuxSize()));
+    AssertTrue(cudaMemsetAsync(sum.back().data(),0,sum.back().size()*sizeof(word),cudaStreamLegacy)==cudaSuccess,"split accumulator initialization failed");
   }
-
-  // first iteration
-  int per = permute_amounts.at(0);
-  const std::vector<DvConstView<word>> *prev_accum = &(srcs.at(0));
-  if (per != 0) {
-    if (has_extra_ct) {
-      Permute(tmp_view, np, per, srcs.at(0));
-      Add(dst, np, tmp_const_view, srcs.back());
-    } else {
-      Permute(tmp_view, np, per, srcs.at(0));
-    }
-    prev_accum = &dst_const_view;
-  } else {
-    if (has_extra_ct) {
-      Add(dst, np, *prev_accum, srcs.back());
-      prev_accum = &dst_const_view;
-    }
+  for(int i=0;i<num_accum;++i) {
+    if(permute_amounts[i]) {
+      Permute(tmp_view,np,permute_amounts[i],srcs.at(i));Add(sum_view,np,sum_const,tmp_const);
+    } else Add(sum_view,np,sum_const,srcs.at(i));
   }
-  for (int i = 1; i < num_accum; i++) {
-    per = permute_amounts.at(i);
-    if (per != 0) {
-      Permute(tmp_view, np, per, srcs.at(i));
-      Add(dst, np, tmp_const_view, *prev_accum);
-    } else {
-      Add(dst, np, srcs.at(i), *prev_accum);
-    }
-    prev_accum = &dst_const_view;
-  }
+  if(extra)Add(sum_view,np,sum_const,srcs.back());
+  for(int j=0;j<num_poly;++j)
+    AssertTrue(cudaMemcpyAsync(dst[j].data(),sum[j].data(),sum[j].size()*sizeof(word),cudaMemcpyDeviceToDevice,cudaStreamLegacy)==cudaSuccess,"split accumulator copy failed");
 }
 
 template <typename word>
@@ -1670,6 +1647,18 @@ void ElementWiseHandler<word>::ModUpToMax(DvView<word> &dst,
   } else {
     Fail("ModUpToMax: Invalid base primes size");
   }
+}
+
+template <typename word>
+void ElementWiseHandler<word>::ModUpToAux(DvView<word>& dst,const DvConstView<word>& src) const {
+  const NPInfo np(0,0,param_.alpha_);
+  AssertTrue(dst.QSize()==0&&dst.AuxSize()==np.num_aux_*param_.degree_,"auxiliary lift shape mismatch");
+  const auto base=param_.GetPrimeVector(param_.LevelToNP(-1));
+  const auto* primes=param_.GetPrimesPtr(np);
+  const int grid=np.num_aux_*param_.degree_/kernel_block_dim_;
+  if(base.size()==2)kernel::ModUpToMax2<word><<<grid,kernel_block_dim_>>>(dst.data(),primes,base[0],base[1],src.data());
+  else if(base.size()==1)kernel::ModUpToMax1<word><<<grid,kernel_block_dim_>>>(dst.data(),primes,base[0],src.data());
+  else Fail("auxiliary lift requires one or two base primes");
 }
 
 template <typename word>

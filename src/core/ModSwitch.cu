@@ -551,6 +551,10 @@ void ModSwitchHandler<word>::Rescale(DvView<word> &dst,
 template <typename word>
 void ModSwitchHandler<word>::ModDownAndRescale(
     DvView<word> &dst, const DvConstView<word> &src) const {
+  if(param_.split_hybrid_) {
+    Dv intermediate(param_.LevelToNP(level_).GetNumQ()*param_.degree_);
+    auto view=intermediate.View();ModDown(view,src);Rescale(dst,intermediate.ConstView());return;
+  }
   ProfileScope profile(ProfileOp::ModDownRescale);
   int degree = param_.degree_;
   NPInfo np = param_.LevelToNP(level_, num_aux_);
