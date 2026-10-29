@@ -1,3 +1,4 @@
+#include "common/OperationProfile.h"
 #include "extension/BootContext.h"
 
 #include <cmath>
@@ -229,6 +230,8 @@ void BootContext<word>::ModUpToMax(Ct &res, const Ct &input,
   this->ntt_handler_.NTT(tmp_bx_view, max_level_np, tmp_bx.ConstView(0), true);
 
   // ModUpToMax(ax)
+  {
+  ProfileScope profile(sse?ProfileOp::SharedLift:ProfileOp::Other);
   max_level_np.num_aux_ = tmp_ax_num_aux;
   this->ntt_handler_.INTTAndMultConst(res_ax_view, np,
                                       working_ct->AxConstView(),
@@ -237,7 +240,10 @@ void BootContext<word>::ModUpToMax(Ct &res, const Ct &input,
   this->ntt_handler_.NTT(tmp_ax_view, max_level_np,
                          tmp_ax.ConstView(tmp_ax_num_aux * degree), true);
 
+  }
+
   if (sse) {
+    ProfileScope profile(ProfileOp::SparseToDense);
     // StD key-switch
     const auto &std_key = evk_map.GetSparseToDenseKey();
     const auto &std_mod_switcher = this->GetStDModSwitchHandler();

@@ -275,6 +275,7 @@ int main(int argc,char** argv) {
         <<"\n  Requested encoding: "<<options.run.encoding<<"\n"<<std::flush;
     }
     Runner runner(options,model,context,client.get());
+    runner.timing.SetProfiling(options.run.ks_profile);
     if(context) {
       if(!options.run.Json())std::cout<<"Preparing model rotation keys...\n"<<std::flush;
       runner.PrepareModel();

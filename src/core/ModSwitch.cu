@@ -1,3 +1,4 @@
+#include "common/OperationProfile.h"
 #include <algorithm>
 
 #include "common/Assert.h"
@@ -414,6 +415,7 @@ template <typename word>
 void ModSwitchHandler<word>::PseudoModUp(
     DvView<word> &dst, const DvConstView<word> &src,
     const DvConstView<word> &p_prod) const {
+  ProfileScope profile(ProfileOp::PseudoModUp);
   NPInfo np = param_.LevelToNP(level_, 0);
   int num_q_primes = np.GetNumQ();
   AssertTrue(src.TotalSize() == num_q_primes * param_.degree_,
@@ -429,6 +431,7 @@ void ModSwitchHandler<word>::PseudoModUp(
 template <typename word>
 void ModSwitchHandler<word>::ModUp(std::vector<DvView<word>> &dst,
                                    const DvConstView<word> &src) const {
+  ProfileScope profile(ProfileOp::ModUp);
   using signed_word = make_signed_t<word>;
   NPInfo np = param_.LevelToNP(level_, 0);
   int num_q_primes = np.GetNumQ();
@@ -511,6 +514,7 @@ void ModSwitchHandler<word>::ModUp(std::vector<DvView<word>> &dst,
 template <typename word>
 void ModSwitchHandler<word>::ModDown(DvView<word> &dst,
                                      const DvConstView<word> &src) const {
+  ProfileScope profile(ProfileOp::ModDown);
   int degree = param_.degree_;
   NPInfo np = param_.LevelToNP(level_, num_aux_);
   int num_q_primes = np.GetNumQ();
@@ -547,6 +551,7 @@ void ModSwitchHandler<word>::Rescale(DvView<word> &dst,
 template <typename word>
 void ModSwitchHandler<word>::ModDownAndRescale(
     DvView<word> &dst, const DvConstView<word> &src) const {
+  ProfileScope profile(ProfileOp::ModDownRescale);
   int degree = param_.degree_;
   NPInfo np = param_.LevelToNP(level_, num_aux_);
   NPInfo next_np = param_.LevelToNP(level_ - 1);

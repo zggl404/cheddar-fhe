@@ -397,6 +397,7 @@ int main(int argc,char** argv) {
       <<"\n  Start / count: "<<options.start<<" / "<<options.count<<"\n  Mode / baby step: "<<options.mode<<" / "<<options.baby_step
       <<"\n  Requested encoding: "<<options.run.encoding<<"\n"<<std::flush;
     Runner runner(context,*client,&model,options.baby_step,options.relu_range,options.run);
+    runner.timing.SetProfiling(options.run.ks_profile);
     if(!options.weights.empty()) {if(!options.run.Json())std::cout<<"Preparing model rotation keys...\n"<<std::flush;runner.PrepareModel();}
     if(options.mode!="conv" && options.mode!="encode") {
       if(!options.run.Json())std::cout<<"Preparing Boot resources...\n"<<std::flush;

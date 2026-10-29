@@ -78,4 +78,15 @@ if len(sys.argv) > 1:
     total = next(json.loads(s[7:]) for s in result.stdout.splitlines() if s.startswith('TIMING '))
     total['images'] = records;validate_run(total)
     assert len(records) == 2 and records[0]['bootstrap_ms'] > 0 and records[0]['activation_ms'] > 0
+    result = subprocess.run([sys.executable, str(root/'scripts/run_inference.py'), '--binary', sys.argv[1], '--count', '2', '--warmup', '1', '--ks-profile', 'on', '--log-format', 'json'], text=True, capture_output=True)
+    assert result.returncode == 0, result.stderr
+    records = [json.loads(s[13:]) for s in result.stdout.splitlines() if s.startswith('IMAGE_TIMING ')]
+    total = next(json.loads(s[7:]) for s in result.stdout.splitlines() if s.startswith('TIMING '))
+    total['images'] = records;validate_run(total)
+    assert total['keyswitch_ns'] > 0 and total['hybrid_ns'] > 0
+    assert total['inference_ns'] == sum(r['inference_ns'] for r in records)
+    bad = copy.deepcopy(total);bad['keyswitch_ns'] += 1
+    try: validate_run(bad)
+    except ValueError: pass
+    else: raise AssertionError('accepted broken profiling sum')
 print('INFERENCE_LAUNCHER_TEST_PASS')

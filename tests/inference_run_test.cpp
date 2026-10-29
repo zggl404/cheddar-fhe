@@ -25,10 +25,15 @@ int main(int argc,char** argv) {
     }
     report.PrepareBoot(Sync,Work);
     InferenceTiming timer(Sync);
+    timer.SetProfiling(report.options.ks_profile);
     for(int image=0;image<count;++image) {
       timer.Reset();auto begin=InferenceClock::now();
       timer.Cpu(InferencePhase::Input,Work);
-      timer.Gpu(InferencePhase::Bootstrap,Work);
+      timer.Gpu(InferencePhase::Bootstrap,[]{
+        ProfileScope key(ProfileOp::KeyMult);Work();
+        {ProfileScope hybrid(ProfileOp::ModDownRescale);Work();}
+        Work();
+      });
       timer.Gpu(InferencePhase::Activation,Work);
       timer.Cpu(InferencePhase::Reference,Work);
       report.AddImage(image,timer.Finish(begin));
@@ -62,5 +67,30 @@ int main(int argc,char** argv) {
   std::cout.rdbuf(saved);
   assert(output.str().find("max_abs=0.250000000, mean_abs=0.025000000")!=std::string::npos);
   assert(output.str().find("\n  Class")!=std::string::npos);
+  // Nested owners partition elapsed time; a same-owner child never adds a
+  // second duration or synchronization. Reset after unwinding must recover.
+  InferenceTiming profiled(Sync);profiled.SetProfiling(true);
+  profiled.Reset();begin=InferenceClock::now();
+  const int before=sync_calls;
+  profiled.Gpu(InferencePhase::Bootstrap,[]{
+    ProfileScope key(ProfileOp::KeyMult);Work();
+    {ProfileScope same(ProfileOp::KeyMult);Work();}
+    {ProfileScope hybrid(ProfileOp::ModDownRescale);Work();}
+    Work();
+  });
+  auto traced=profiled.Finish(begin);
+  assert(sync_calls-before==6&&traced.operations.Keyswitch()>0&&traced.operations.Hybrid()>0);
+  assert(traced.operations.calls[static_cast<size_t>(ProfileOp::KeyMult)]==2);
+  assert(traced.operations.Keyswitch()+traced.operations.Hybrid()<=traced.total_ns);
+  profiled.Reset();
+  try {profiled.Gpu(InferencePhase::Linear,[]{ProfileScope key(ProfileOp::ModUp);throw std::runtime_error("probe");});}
+  catch(const std::runtime_error&){}
+  assert(OperationProfile::current==nullptr);
+  profiled.Reset();begin=InferenceClock::now();profiled.Cpu(InferencePhase::Input,Work);
+  assert(profiled.Finish(begin).operations.Keyswitch()==0);
+  profiled.SetProfiling(false);profiled.Reset();begin=InferenceClock::now();
+  const int disabled_before=sync_calls;
+  {ProfileScope ignored(ProfileOp::KeyMult);Work();}
+  assert(sync_calls==disabled_before&&!profiled.Finish(begin).operations.enabled);
   std::cout<<"INFERENCE_RUN_TEST_PASS\n";
 }

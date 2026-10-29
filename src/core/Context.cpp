@@ -1,3 +1,4 @@
+#include "common/OperationProfile.h"
 #include "core/Context.h"
 
 #include <type_traits>
@@ -612,6 +613,7 @@ void Context<word>::MultKey(Ct &res, const Ct &a, const Evk &key) const {
 template <typename word>
 void Context<word>::MultKeyNoModDown(Ct &accum, const std::vector<Dv> &a_modup,
                                      const Ct &a_orig, const Evk &key) const {
+  ProfileScope profile(ProfileOp::KeyMult);
   NPInfo a_orig_np = a_orig.GetNP();
   int level = param_.NPToLevel(a_orig_np);
   int num_main = a_orig_np.num_main_;
@@ -652,6 +654,7 @@ void Context<word>::MultKeyNoModDown(Ct &accum, const std::vector<Dv> &a_modup,
 template <typename word>
 void Context<word>::MultKeyNoModDown(Ct &accum, const Ct &a,
                                      const Evk &key) const {
+  ProfileScope profile(ProfileOp::KeyMult);
   NPInfo a_np = a.GetNP();
   AssertTrue(a_np.num_aux_ == 0,
              "MultKeyNoModDown is not supported for ciphertexts with p primes");

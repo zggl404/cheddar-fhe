@@ -40,6 +40,7 @@ def main():
     parser.add_argument('--count', type=int, default=1)
     parser.add_argument('--warmup', type=int, default=0, help='included in count and end-to-end time')
     parser.add_argument('--encode-mode', choices=('auto', 'pre', 'stream'), default='auto')
+    parser.add_argument('--ks-profile', choices=('off', 'on'), default='off')
     parser.add_argument('--log-format', choices=('human', 'json'), default='human')
     args, options = parser.parse_known_args()
     if not 0 <= args.warmup < args.count <= 10000:
@@ -59,7 +60,7 @@ def main():
         options += ['--cifar', str(args.cifar.expanduser().resolve())]
     if args.model and '--relu-range' not in options:
         options += ['--relu-range', {'resnet56': '12', 'resnet110': '24'}.get(args.model, '10')]
-    options += ['--count', str(args.count), '--encode-mode', args.encode_mode, '--log-format', args.log_format]
+    options += ['--count', str(args.count), '--encode-mode', args.encode_mode, '--log-format', args.log_format, '--ks-profile', args.ks_profile]
     env = dict(os.environ)
     env['LD_LIBRARY_PATH'] = str(binary.parents[1]) + ':' + env.get('LD_LIBRARY_PATH', '')
     try:

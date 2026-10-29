@@ -1,3 +1,4 @@
+#include "common/OperationProfile.h"
 #include "common/Assert.h"
 #include "common/Basic.cuh"
 #include "common/CommonUtils.h"
@@ -967,6 +968,7 @@ template <typename word>
 void ElementWiseHandler<word>::Permute(
     std::vector<DvView<word>> &dst, const NPInfo &np, int permute_amount,
     const std::vector<DvConstView<word>> &src1) const {
+  ProfileScope profile(ProfileOp::Automorphism);
   // Check the size of the vectors
   int num_poly = dst.size();
   AssertTrue(num_poly == static_cast<int>(src1.size()),
@@ -1061,6 +1063,7 @@ void ElementWiseHandler<word>::PermuteAccumWorker(
     std::vector<DvView<word>> &dst, const NPInfo &np,
     const std::vector<int> &permute_amounts,
     const std::vector<std::vector<DvConstView<word>>> &srcs) const {
+  ProfileScope profile(ProfileOp::AutomorphismAccum);
   // Check the size of the vectors
   int num_poly = dst.size();
   AssertTrue(num_poly > 0 && num_poly <= max_num_poly_,

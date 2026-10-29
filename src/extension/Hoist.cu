@@ -1,3 +1,4 @@
+#include "common/OperationProfile.h"
 #include "common/Basic.cuh"
 #include "common/CommonUtils.h"
 #include "common/ConstantMemory.cuh"
@@ -209,6 +210,7 @@ void HoistHandler<word>::BSFusedKeyMult(
     ConstContextPtr<word> context, std::map<int, Ct> &res,
     std::vector<Dv> &a_modup, const Ct &a_orig, const EvkMap<word> &keys,
     std::vector<int> &rotations, const Dv &input_bx_pseudo_modup) const {
+  ProfileScope profile(ProfileOp::FusedBaby);
   NPInfo a_orig_np = a_orig.GetNP();
   int level = context->param_.NPToLevel(a_orig_np);
   int num_main = a_orig_np.num_main_;

@@ -21,6 +21,7 @@ struct RunOptions {
   std::string format="human", encoding="auto";
   std::string timing_file;
   bool verbose=false;
+  bool ks_profile=false;
   bool Parse(const std::string& key,const std::string& value) {
     if(key=="--log-format") {
       if(value!="human"&&value!="json")throw std::runtime_error("log-format must be human|json");
@@ -28,6 +29,9 @@ struct RunOptions {
     } else if(key=="--encode-mode") {
       if(value!="auto"&&value!="pre"&&value!="stream")throw std::runtime_error("encode-mode must be auto|pre|stream");
       encoding=value;
+    } else if(key=="--ks-profile") {
+      if(value!="off"&&value!="on")throw std::runtime_error("ks-profile must be off|on");
+      ks_profile=value=="on";
     } else if(key=="--timing-file")timing_file=value;
     else if(key=="--verbose") {
       if(value!="0"&&value!="1")throw std::runtime_error("verbose must be 0 or 1");
@@ -110,12 +114,14 @@ inline void PrintEncoding(const RunOptions& options,bool pre,size_t estimated,si
   if(options.Json()) {
     std::cout<<"RESOURCES {\"encode_mode\":\""<<(pre?"pre":"stream")
              <<"\",\"estimated_plaintext_bytes\":"<<estimated<<",\"cache_budget_bytes\":"<<available
-             <<",\"model_rotation_requests\":"<<model_rotations<<",\"boot_rotation_requests\":"<<boot_rotations<<"}\n";
+             <<",\"model_rotation_requests\":"<<model_rotations<<",\"boot_rotation_requests\":"<<boot_rotations
+             <<",\"ks_profile\":"<<(options.ks_profile?"true":"false")<<"}\n";
   } else {
     std::ostringstream out;out<<std::fixed<<std::setprecision(2)
       <<"\nResources\n  Model rotation requests: "<<model_rotations<<"\n  Boot rotation requests : "<<boot_rotations
       <<"\n  Encoding mode          : "<<(pre?"pre (resident weights)":"stream (encode during inference)")
       <<"\n  Estimated weight cache : "<<estimated/1073741824.0<<" GiB"
+      <<"\n  Keyswitch profiling    : "<<(options.ks_profile?"on (synchronized scopes)":"off")
       <<"\n  Conservative budget    : "<<available/1073741824.0<<" GiB\n";
     std::cout<<out.str()<<std::flush;
   }
