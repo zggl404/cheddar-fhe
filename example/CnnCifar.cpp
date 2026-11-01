@@ -40,6 +40,7 @@ Options Parse(int argc,char** argv) {
   }
   Require(!o.weights.empty()&&!o.cifar.empty(),"--weights and --cifar are required");
   Require(o.mode=="full"||o.mode=="reference"||o.mode=="calibrate","mode must be full|reference|calibrate");
+  Require(example::kPlaintextReference||o.mode=="full","reference/calibrate modes require CHEDDAR_PLAINTEXT_REFERENCE=ON");
   Require(o.log_degree==16||o.log_degree==17,"log-degree must be 16 or 17");
   Require(o.slots>0&&o.slots<=(1<<(o.log_degree-1))&&!(o.slots&(o.slots-1)),"invalid slot count");
   Require(o.start>=0&&o.count>0&&o.start+o.count<=10000&&o.stop_after>=0,"invalid image/node range");
@@ -49,6 +50,7 @@ Options Parse(int argc,char** argv) {
 void Sync(){auto rc=cudaDeviceSynchronize();Require(rc==cudaSuccess,std::string("CUDA: ")+cudaGetErrorString(rc));}
 template<class F>void Synchronized(F function){Sync();function();Sync();}
 struct State {
+  // With reference disabled, polynomial keeps only the zero-filled layout descriptor.
   Tensor polynomial,exact;
   Ct ciphertext;
   State(Tensor p,Tensor e):polynomial(std::move(p)),exact(std::move(e)){}
@@ -89,15 +91,17 @@ class Runner {
     if(!context_)return;
     timing.Gpu(InferencePhase::ValidationOutput,[&]{
       Pt pt;client_->Decrypt(pt,state.ciphertext);std::vector<Complex> actual;context_->encoder_.Decode(actual,pt);
-      auto expected=cnn::Pack(state.polynomial,o_.slots,o_.range);double real=0,imaginary=0;
-      Require(actual.size()==expected.size(),"CNN slot count mismatch");
+      std::vector<double> expected;
+      if constexpr(example::kPlaintextReference)expected=cnn::Pack(state.polynomial,o_.slots,o_.range);
+      double real=0,imaginary=0;
+      Require(actual.size()==size_t(o_.slots),"CNN slot count mismatch");
       for(size_t i=0;i<actual.size();++i) {
         Require(std::isfinite(actual[i].real())&&std::isfinite(actual[i].imag()),"nonfinite CNN ciphertext");
-        real=std::max(real,std::abs(actual[i].real()-expected[i])*o_.range);
+        if constexpr(example::kPlaintextReference)real=std::max(real,std::abs(actual[i].real()-expected[i])*o_.range);
         imaginary=std::max(imaginary,std::abs(actual[i].imag())*o_.range);
       }
       max_error=std::max({max_error,real,imaginary});
-      if(o_.run.verbose)std::cout<<"CHECK name="<<name<<" level="<<context_->param_.NPToLevel(state.ciphertext.GetNP())
+      if(o_.run.verbose&&example::kPlaintextReference)std::cout<<"CHECK name="<<name<<" level="<<context_->param_.NPToLevel(state.ciphertext.GetNP())
                <<" real_error="<<real<<" imaginary_error="<<imaginary<<std::endl;
       Require(real<=1e-2&&imaginary<=1e-2,"CNN numerical gate failed at "+name);
     });
@@ -170,7 +174,10 @@ class Runner {
     const size_t count=NodeCount();
     std::vector<std::shared_ptr<State>> states(count+1);std::vector<int> uses(count+1);
     for(size_t i=0;i<count;++i)for(auto source:model_.nodes[i].inputs)++uses[source];
-    timing.Cpu(InferencePhase::Input,[&]{states[0]=std::make_shared<State>(input,input);});max_error=0;max_bound=0;
+    timing.Cpu(InferencePhase::Input,[&]{
+      if constexpr(example::kPlaintextReference)states[0]=std::make_shared<State>(input,input);
+      else states[0]=std::make_shared<State>(Tensor(input.channels,input.width,input.pack),Tensor(1,1));
+    });max_error=0;max_bound=0;
     if(context_) {
       timing.Gpu(InferencePhase::Input,[&]{auto packed=cnn::Pack(input,o_.slots,o_.range);Pt pt;
         context_->encoder_.Encode(pt,3,context_->param_.GetScale(3),Message(packed.begin(),packed.end()));client_->Encrypt(states[0]->ciphertext,pt);});
@@ -182,7 +189,7 @@ class Runner {
       if(node.operation==Operation::Flatten)output=input_state;  // FC retains the physical CHW slot mapping.
       else if(node.operation==Operation::ReLU) {
         double bound=0;
-        timing.Cpu(InferencePhase::Reference,[&]{
+        example::PlaintextReference(timing,[&]{
         output=std::make_shared<State>(input_state->polynomial,input_state->exact);
         for(double x:output->polynomial.values)bound=std::max(bound,std::abs(x));
         max_bound=std::max(max_bound,bound);
@@ -190,19 +197,24 @@ class Runner {
         for(auto& x:output->polynomial.values)x=o_.mode=="calibrate"?std::max(0.0,x):resnet::PolyReLU(x,o_.range);
         for(auto& x:output->exact.values)x=std::max(0.0,x);
         });
-        if(o_.run.verbose)timing.Cpu(InferencePhase::ValidationOutput,[&]{std::cout<<"ACTIVATION name="<<node.name<<" max_abs="<<bound<<std::endl;});
+        if constexpr(!example::kPlaintextReference) {
+          const auto& shape=input_state->polynomial;
+          output=std::make_shared<State>(Tensor(shape.channels,shape.width,shape.pack),Tensor(1,1));
+        }
+        if(o_.run.verbose&&example::kPlaintextReference)timing.Cpu(InferencePhase::ValidationOutput,[&]{std::cout<<"ACTIVATION name="<<node.name<<" max_abs="<<bound<<std::endl;});
         if(context_)Audit([&]{relu->Evaluate(output->ciphertext,input_state->ciphertext,client_->GetEvkMap(),&timing);});
       } else if(node.operation==Operation::Concat) {
         auto second=states.at(node.inputs[1]);Require(bool(second),"released CNN branch");
         Require(input_state->polynomial.width==second->polynomial.width&&
                 node.channels==input_state->polynomial.channels+second->polynomial.channels,"Concat shape mismatch");
-        timing.Cpu(InferencePhase::Reference,[&]{
+        example::PlaintextReference(timing,[&]{
         output=std::make_shared<State>(OutputTensor(node),OutputTensor(node));
         auto concatenate=[](Tensor& out,const Tensor& a,const Tensor& b){
           std::copy(a.values.begin(),a.values.end(),out.values.begin());std::copy(b.values.begin(),b.values.end(),out.values.begin()+a.values.size());};
         concatenate(output->polynomial,input_state->polynomial,second->polynomial);
         concatenate(output->exact,input_state->exact,second->exact);
         });
+        if constexpr(!example::kPlaintextReference)output=std::make_shared<State>(OutputTensor(node),Tensor(1,1));
         if(context_) {
           const auto& shape=input_state->polynomial;const int group=shape.pack*shape.pack;
           Require(shape.width==node.width&&shape.channels%group==0,"Concat requires aligned channel groups");
@@ -215,11 +227,15 @@ class Runner {
             context_->Add(output->ciphertext,a,rotated);});
         }
       } else {
-        timing.Cpu(InferencePhase::Reference,[&]{output=std::make_shared<State>(LinearReference(node,input_state->polynomial,model_),LinearReference(node,input_state->exact,model_));});
+        example::PlaintextReference(timing,[&]{output=std::make_shared<State>(LinearReference(node,input_state->polynomial,model_),LinearReference(node,input_state->exact,model_));});
+        if constexpr(!example::kPlaintextReference)output=std::make_shared<State>(OutputTensor(node),Tensor(1,1));
         if(context_)Linear(output->ciphertext,input_state->ciphertext,input_state->polynomial,node,i);
       }
       // Also validates capacity in reference mode before allocating GPU plaintexts.
-      timing.Cpu(InferencePhase::ValidationOutput,[&]{cnn::Pack(output->polynomial,o_.slots,o_.range);});Check(*output,node.name);
+      timing.Cpu(InferencePhase::ValidationOutput,[&]{
+        if constexpr(example::kPlaintextReference)cnn::Pack(output->polynomial,o_.slots,o_.range);
+        else Require(LinearPlan::Span(output->polynomial)<=o_.slots,"CNN tensor exceeds slot capacity");
+      });Check(*output,node.name);
       states[i+1]=output;
       for(auto source:node.inputs)if(--uses[source]==0)states[source].reset();
     }
@@ -298,33 +314,43 @@ int main(int argc,char** argv) {
       double poly_error=0,relu_error=0;std::vector<double> fhe_logits;
       if(full) {
         Require(output->polynomial.values.size()==10,"CNN output is not ten logits");
-        prediction=resnet::Top1(output->polynomial);
+        if constexpr(example::kPlaintextReference)prediction=resnet::Top1(output->polynomial);
         if(context) {
           Pt pt;client->Decrypt(pt,output->ciphertext);std::vector<Complex> decoded;context->encoder_.Decode(decoded,pt);
+          Require(decoded.size()>=10,"CNN output is not ten logits");
           prediction=0;for(int c=1;c<10;++c)if(decoded[c].real()>decoded[prediction].real())prediction=c;
           for(int c=0;c<10;++c) {
             fhe_logits.push_back(decoded[c].real()*options.range);
-            poly_error=std::max(poly_error,std::abs(decoded[c].real()*options.range-output->polynomial.values[c]));
-            relu_error=std::max(relu_error,std::abs(decoded[c].real()*options.range-output->exact.values[c]));
+            Require(std::isfinite(fhe_logits.back())&&std::isfinite(decoded[c].imag()),"nonfinite CNN logits");
+            if constexpr(example::kPlaintextReference) {
+              poly_error=std::max(poly_error,std::abs(decoded[c].real()*options.range-output->polynomial.values[c]));
+              relu_error=std::max(relu_error,std::abs(decoded[c].real()*options.range-output->exact.values[c]));
+            }
           }
-          Require(prediction==resnet::Top1(output->polynomial)&&prediction==resnet::Top1(output->exact),"CNN reference top1 mismatch");
+          if constexpr(example::kPlaintextReference)Require(prediction==resnet::Top1(output->polynomial)&&prediction==resnet::Top1(output->exact),"CNN reference top1 mismatch");
         }
       }
       size_t free_bytes=0,total_bytes=0;if(context)Require(cudaMemGetInfo(&free_bytes,&total_bytes)==cudaSuccess,"memory query failed");
       if(options.run.Json()) {
       std::cout<<"RESULT {\"status\":\"PASS\",\"family\":\""<<model.family<<"\",\"mode\":\""<<options.mode
                <<"\",\"image\":"<<image<<",\"label\":"<<label<<",\"prediction\":"<<prediction
-               <<",\"polynomial_top1\":"<<(full?resnet::Top1(output->polynomial):-1)<<",\"relu_top1\":"<<(full?resnet::Top1(output->exact):-1)
+               <<",\"plaintext_reference\":"<<(example::kPlaintextReference?"true":"false");
+      if constexpr(example::kPlaintextReference)std::cout<<",\"polynomial_top1\":"<<(full?resnet::Top1(output->polynomial):-1)<<",\"relu_top1\":"<<(full?resnet::Top1(output->exact):-1);
+      else std::cout<<",\"polynomial_top1\":null,\"relu_top1\":null";
+      std::cout
                <<",\"encode_mode\":\""<<(runner.preencoded?"pre":"stream")<<"\""
-               <<",\"N\":"<<(1<<options.log_degree)<<",\"slots\":"<<options.slots<<",\"relu_range\":"<<options.range
-               <<",\"max_activation\":"<<runner.max_bound<<",\"max_abs_error\":"<<runner.max_error
-               <<",\"fhe_vs_polynomial_logits\":"<<poly_error<<",\"fhe_vs_relu_logits\":"<<relu_error
+               <<",\"N\":"<<(1<<options.log_degree)<<",\"slots\":"<<options.slots<<",\"relu_range\":"<<options.range;
+      if constexpr(example::kPlaintextReference)std::cout<<",\"max_activation\":"<<runner.max_bound<<",\"max_abs_error\":"<<runner.max_error
+               <<",\"fhe_vs_polynomial_logits\":"<<poly_error<<",\"fhe_vs_relu_logits\":"<<relu_error;
+      else std::cout<<",\"max_activation\":null,\"max_abs_error\":null,\"fhe_vs_polynomial_logits\":null,\"fhe_vs_relu_logits\":null";
+      std::cout
                <<",\"boot_count\":"<<(runner.relu?runner.relu->BootCount()-before_boots:0)<<",\"fhe_encode_calls\":"<<runner.fhe_encode_calls
-               <<",\"resident_gpu_bytes\":"<<(total_bytes-free_bytes)
-               <<",\"polynomial_logits\":[";
-      if(full)for(int c=0;c<10;++c)std::cout<<(c?",":"")<<output->polynomial.values[c];
-      std::cout<<"],\"relu_logits\":[";if(full)for(int c=0;c<10;++c)std::cout<<(c?",":"")<<output->exact.values[c];
-      std::cout<<"],\"fhe_logits\":[";for(size_t c=0;c<fhe_logits.size();++c)std::cout<<(c?",":"")<<fhe_logits[c];
+               <<",\"resident_gpu_bytes\":"<<(total_bytes-free_bytes);
+      if constexpr(example::kPlaintextReference) {
+        std::cout<<",\"polynomial_logits\":[";if(full)for(int c=0;c<10;++c)std::cout<<(c?",":"")<<output->polynomial.values[c];
+        std::cout<<"],\"relu_logits\":[";if(full)for(int c=0;c<10;++c)std::cout<<(c?",":"")<<output->exact.values[c];std::cout<<"]";
+      } else std::cout<<",\"polynomial_logits\":null,\"relu_logits\":null";
+      std::cout<<",\"fhe_logits\":[";for(size_t c=0;c<fhe_logits.size();++c)std::cout<<(c?",":"")<<fhe_logits[c];
       std::cout<<"]}"<<std::endl;
       } else example::PrintInference(model.family,image,label,prediction,
           full?output->exact.values:std::vector<double>{},fhe_logits,runner.max_error,runner.relu?runner.relu->BootCount()-before_boots:0);

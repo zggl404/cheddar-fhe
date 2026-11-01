@@ -108,6 +108,8 @@ python scripts/run_inference.py --model vgg11 --cifar "$CIFAR_BIN" --count 6 --w
 需要区分 Keyswitch、Non-keyswitch 和 Hybrid 时间时，加 `--ks-profile on`。
 默认关闭，开启会增加同步测量开销，边界与示例见[计时说明](docs/keyswitch-profiling.md)。
 
+需要保留融合路径、按实际 GPU kernel 分类时，见[NVTX / Nsight GPU 活动计时](docs/gpu-activity.md)。
+
 密钥可通过 `--key-mode save|load --key-dir /data/keys/模型名` 预生成保存并在后续运行加载，
 默认仍为 `generate`，详见[KMS 使用说明](docs/kms.md)。
 
@@ -117,6 +119,18 @@ python scripts/run_inference.py --model vgg11 --cifar "$CIFAR_BIN" --count 6 --w
 
 默认分行显示参数、资源模式、每个类别的精确 ReLU 明文输出、FHE 解密输出，
 以及最大/平均绝对误差。逐层诊断默认收起，数值校验仍然执行；失败会返回非零状态。
+
+明文参考可通过 CMake 关闭，适用于 ResNet 和 CNN 入口，默认 `ON`：
+
+```bash
+cmake -S . -B build -DCHEDDAR_PLAINTEXT_REFERENCE=OFF
+cmake --build build --parallel 12 --target resnet_cifar cnn_cifar
+```
+
+关闭后不执行网络明文前向，`reference_ms=0`；日志标记 `plaintext_reference=false`，
+参考输出、top-1 和比较误差为 `null`。保留密文结构检查、逐层有限值/虚部检查及最终解密预测。
+参考对比及基于明文的激活范围检查不执行；需要正确性验证时改为 `ON` 并重新编译。
+详细边界见[明文参考开关](docs/inference.md#明文参考开关)。
 
 计时只有一套口径，所有模型一致：
 

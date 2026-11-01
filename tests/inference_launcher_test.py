@@ -34,6 +34,25 @@ for version in (None, 1):
     else: raise AssertionError('accepted incompatible schema')
 summary = summarize(images, 1)
 assert summary['measured_count'] == 1 and summary['mean_ms']['inference_ms'] == 9
+disabled = copy.deepcopy(row)
+disabled['plaintext_reference'] = False
+for item in disabled['images']:
+    item['plaintext_reference'] = False
+    item['inference_ms'] -= item['reference_ms']
+    item['reference_ms'] = 0
+disabled['inference_ms'] -= disabled['reference_ms']
+disabled['reference_ms'] = 0
+disabled['total_ms'] -= row['reference_ms']
+validate_run(disabled)
+for change in ('nonzero_reference', 'mixed_build'):
+    bad = copy.deepcopy(disabled)
+    if change == 'nonzero_reference':
+        bad['images'][0]['reference_ms'] = 1
+        bad['images'][0]['inference_ms'] += 1
+    else: bad['images'][0]['plaintext_reference'] = True
+    try: validate_run(bad)
+    except ValueError: pass
+    else: raise AssertionError('accepted invalid disabled-reference timing: ' + change)
 
 with tempfile.TemporaryDirectory(prefix='cheddar-launcher-test-') as temporary:
     folder = Path(temporary)

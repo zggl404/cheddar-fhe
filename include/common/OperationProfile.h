@@ -5,6 +5,7 @@
 #include <cstdint>
 #include <exception>
 #include <stdexcept>
+#include "GpuTrace.h"
 
 namespace cheddar {
 
@@ -18,6 +19,11 @@ constexpr size_t kProfileOps=static_cast<size_t>(ProfileOp::Count);
 inline constexpr std::array<const char*,kProfileOps> kProfileNames{{
   "other","modup","pseudo_modup","key_mult","moddown","automorphism",
   "sparse_to_dense","fused_baby","moddown_rescale","automorphism_accum","shared_lift"}};
+inline constexpr std::array<const char*,kProfileOps> kGpuProfileNames{{
+  "cheddar:op:other","cheddar:op:modup","cheddar:op:pseudo_modup","cheddar:op:key_mult",
+  "cheddar:op:moddown","cheddar:op:automorphism","cheddar:op:sparse_to_dense",
+  "cheddar:op:fused_baby","cheddar:op:moddown_rescale","cheddar:op:automorphism_accum",
+  "cheddar:op:shared_lift"}};
 inline bool IsHybrid(ProfileOp op) { return op>=ProfileOp::FusedBaby&&op<ProfileOp::Count; }
 
 struct OperationTimes {
@@ -75,7 +81,7 @@ class OperationProfile {
 
 class ProfileScope {
  public:
-  explicit ProfileScope(ProfileOp op):profile_(OperationProfile::current) {
+  explicit ProfileScope(ProfileOp op):trace_(kGpuProfileNames[static_cast<size_t>(op)]),profile_(OperationProfile::current) {
     if(profile_) {exceptions_=std::uncaught_exceptions();previous_=profile_->Enter(op);}
   }
   ProfileScope(const ProfileScope&)=delete;
@@ -86,6 +92,7 @@ class ProfileScope {
     else if(OperationProfile::current==profile_)profile_->Leave(previous_);
   }
  private:
+  GpuTraceRange trace_;
   OperationProfile* profile_;
   ProfileOp previous_=ProfileOp::Other;
   int exceptions_=0;

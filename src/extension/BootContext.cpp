@@ -204,6 +204,7 @@ void BootContext<word>::ModUpToMax(Ct &res, const Ct &input,
   const Ct *working_ct = &input;
   if (sse) {
     // Dense to sparse key-switch
+    GpuTraceRange trace("cheddar:source:dense_to_sparse");
     const auto &dts_key = evk_map.GetDenseToSparseKey();
 
     // DtS key-switch
@@ -240,12 +241,14 @@ void BootContext<word>::ModUpToMax(Ct &res, const Ct &input,
     this->elem_handler_.ModUpToMax(q_view,res.AxConstView());
     this->ntt_handler_.NTT(q_view,q_np,DvConstView<word>(q_view),true);
     {
+      GpuTraceRange trace("cheddar:source:sparse_to_dense");
       ProfileScope profile(ProfileOp::ModUp);
       DvView<word> p_view(tmp_ax.data()+L*degree,alpha*degree,alpha*degree);
       this->elem_handler_.ModUpToAux(p_view,res.AxConstView());
       this->ntt_handler_.NTT(p_view,NPInfo(0,0,alpha),DvConstView<word>(p_view),true);
     }
   } else {
+    GpuTraceRange trace("cheddar:source:sparse_to_dense");
     ProfileScope profile(sse?ProfileOp::SharedLift:ProfileOp::Other);
     this->ntt_handler_.INTTAndMultConst(res_ax_view,np,working_ct->AxConstView(),mod_max_intt_const_.ConstView(0));
     this->elem_handler_.ModUpToMax(tmp_ax_view,res.AxConstView());
@@ -253,6 +256,7 @@ void BootContext<word>::ModUpToMax(Ct &res, const Ct &input,
   }
 
   if (sse) {
+    GpuTraceRange trace("cheddar:source:sparse_to_dense");
     ProfileScope profile(ProfileOp::SparseToDense);
     // StD key-switch
     const auto &std_key = evk_map.GetSparseToDenseKey();

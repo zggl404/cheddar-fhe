@@ -564,6 +564,7 @@ void Context<word>::MultImaginaryUnit(Ct &res, const Ct &a) const {
 
 template <typename word>
 void Context<word>::Relinearize(Ct &res, const Ct &a, const Evk &key) const {
+  GpuTraceRange trace("cheddar:source:relinearization");
   AssertTrue(a.HasRx(), "Relinearize requires aux");
   MultKey(res, a, key);
 }
@@ -702,6 +703,7 @@ void Context<word>::MultKeyNoModDown(Ct &accum, const Ct &a,
     std::vector<std::vector<DvConstView<word>>> src_const_views;
     src_const_views.push_back(a.ConstViewVector(0, true));
     src_const_views.push_back(accum.ConstViewVector());
+    GpuTraceRange correction("cheddar:op:key_correction");
     elem_handler_.CAccum(caccum_res, a_np, src_const_views, {p_prod});
   } else {
     mod_switcher.ModUp(mod_up_result_view, a.AxConstView());
@@ -713,6 +715,7 @@ void Context<word>::MultKeyNoModDown(Ct &accum, const Ct &a,
     src_const_views.push_back(std::vector<DvConstView<word>>{a.BxConstView()});
     src_const_views.push_back(
         std::vector<DvConstView<word>>{accum.BxConstView()});
+    GpuTraceRange correction("cheddar:op:key_correction");
     elem_handler_.CAccum(caccum_res, a_np, src_const_views, {p_prod});
   }
 }
@@ -720,6 +723,7 @@ void Context<word>::MultKeyNoModDown(Ct &accum, const Ct &a,
 template <typename word>
 void Context<word>::RelinearizeRescale(Ct &res, const Ct &a,
                                        const Evk &key) const {
+  GpuTraceRange trace("cheddar:source:relinearization");
   AssertTrue(a.HasRx(), "RelinearizeRescale requires aux");
 
   int level = param_.NPToLevel(a.GetNP());
@@ -782,6 +786,7 @@ void Context<word>::Rescale(Ct &res, const Ct &a) const {
 template <typename word>
 void Context<word>::HRot(Ct &res, const Ct &a, const Evk &rot_key,
                          int rot_dist) const {
+  GpuTraceRange trace("cheddar:source:rotation");
   int num_slots = a.GetNumSlots();
   rot_dist %= num_slots;
   if (rot_dist < 0) rot_dist += num_slots;
@@ -798,6 +803,7 @@ void Context<word>::HRot(Ct &res, const Ct &a, const Evk &rot_key,
 
 template <typename word>
 void Context<word>::HConj(Ct &res, const Ct &a, const Evk &conj_key) const {
+  GpuTraceRange trace("cheddar:source:conjugation");
   Ct tmp;
   MultKey(tmp, a, conj_key);
   PermuteConjugate(res, tmp);
@@ -806,6 +812,7 @@ void Context<word>::HConj(Ct &res, const Ct &a, const Evk &conj_key) const {
 template <typename word>
 void Context<word>::HRotAdd(Ct &res, const Ct &a, const Ct &b,
                             const Evk &rot_key, int rot_dist) const {
+  GpuTraceRange trace("cheddar:source:rotation");
   AssertSameNP(a, b);
   AssertSameScale(a, b);
   int num_slots = Max(a.GetNumSlots(), b.GetNumSlots());
@@ -841,6 +848,7 @@ void Context<word>::HRotAdd(Ct &res, const Ct &a, const Ct &b,
 template <typename word>
 void Context<word>::HConjAdd(Ct &res, const Ct &a, const Ct &b,
                              const Evk &conj_key) const {
+  GpuTraceRange trace("cheddar:source:conjugation");
   AssertSameNP(a, b);
   AssertSameScale(a, b);
   int num_slots = Max(a.GetNumSlots(), b.GetNumSlots());

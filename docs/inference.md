@@ -70,6 +70,33 @@ CKKS 展开权重大小远大于原始 ONNX；不能由 ONNX 文件大小判断�
 
 ## 统一计时
 
+### 明文参考开关
+
+`CHEDDAR_PLAINTEXT_REFERENCE` 是 CMake 选项，默认 `ON`，同时控制
+`resnet_cifar` 和 `cnn_cifar`。在已配置的构建目录中切换后重新编译：
+
+```bash
+cmake -S . -B build -DCHEDDAR_PLAINTEXT_REFERENCE=OFF
+cmake --build build --parallel 12 --target resnet_cifar cnn_cifar
+```
+
+`OFF` 跳过同多项式、精确 ReLU 两条网络明文前向及参考对比，不将这部分工作移到 prepare。
+用于密文执行的张量形状、布局和权重准备仍执行；输入归一化和加密仍属于 `input_ms`。
+逐层解密的有限值/虚部检查、形状检查及最终 FHE logits/预测仍保留，所以
+`validation_output_ms` 不会归零。FHE 算法、参数和 Boot 调度保持原有路径。
+
+`RESULT`、`IMAGE_TIMING`、`TIMING` 带 `plaintext_reference` 布尔字段。
+关闭版 `reference_ms` 必须为 0；`RESULT` 的参考 logits、参考 top-1、最大比较误差及
+FHE 对参考的误差为 JSON `null`，CNN 的明文激活界也为 `null`。
+`status=PASS` 表示该构建启用的检查通过，不代表与明文参考的数值校验通过。
+不能在关闭版验证网络的固定激活范围；应先用开启版对同一权重和输入范围验证。
+
+验证脚本 `validate_resnet.py`、`validate_cnn.py` 要求开启参考。
+关闭版拒绝 ResNet 的 `reference`/`relu` 探针，以及 CNN 的 `reference`/`calibrate` 模式，
+避免输出伪参考结果。恢复验证时设置 `-DCHEDDAR_PLAINTEXT_REFERENCE=ON` 后重新编译。
+
+### 字段及边界
+
 计时 schema_version=2。C++ 每图测量、外层入口、两个验证脚本共用同一套定义。
 完整运行 TIMING 仅由外层入口发布，C++ 不再另外发布 main 边界的总时间。
 JSON 中 `RESULT` 只含正确性与资源数据；`IMAGE_TIMING` 为每张图，

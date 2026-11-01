@@ -25,6 +25,11 @@ def validate_image(row):
             raise ValueError(f'invalid timing value: {key}')
     close(row['fhe_eval_ms'], sum(row[k] for k in FHE_FIELDS), 'FHE evaluation')
     close(row['inference_ms'], sum(row[k] for k in LEAF_FIELDS), 'inference')
+    if 'plaintext_reference' in row:
+        if type(row['plaintext_reference']) is not bool:
+            raise ValueError('plaintext_reference must be a boolean')
+        if not row['plaintext_reference'] and row['reference_ms'] != 0:
+            raise ValueError('disabled plaintext reference has nonzero reference_ms')
 
     if row.get('ks_profile', False):
         if row.get('profile_method') != 'synchronized_scopes':
@@ -71,6 +76,8 @@ def validate_run(row):
         raise ValueError('mixed execution modes')
     if any(image.get('ks_profile', False) != row.get('ks_profile', False) for image in images):
         raise ValueError('mixed operation profiling modes')
+    if any(image.get('plaintext_reference', True) != row.get('plaintext_reference', True) for image in images):
+        raise ValueError('mixed plaintext reference builds')
     fields = (*IMAGE_FIELDS, *PROFILE_FIELDS) if row.get('ks_profile', False) else IMAGE_FIELDS
     for key in fields:
         close(row[key], sum(image[key] for image in images), f'image sum: {key}')
@@ -100,6 +107,7 @@ def summarize(images, warmup):
 
 def print_human(row):
     summary = row['statistics']
+    print('\nPlaintext reference: ' + ('enabled' if row.get('plaintext_reference', True) else 'disabled; numerical reference comparisons unavailable'))
     print('\nTiming (wall clock, ms; all images including warmup)')
     for label, key in (('Model resources / process overhead', 'model_prepare_ms'),
                        ('Boot resource preparation', 'boot_prepare_ms'),

@@ -573,6 +573,7 @@ template <typename word>
 void HoistHandler<word>::Evaluate(ConstContextPtr<word> context, Ct &res,
                                   const Ct &input, const EvkMap<word> &evk_map,
                                   bool min_ks) const {
+  GpuTraceRange trace("cheddar:source:linear_transform");
   std::map<int, Ct> bs;
   EvaluateBabyStep(context, bs, input, evk_map, min_ks);
   EvaluateGiantStep(context, res, bs, evk_map, min_ks);
@@ -584,6 +585,8 @@ void HoistHandler<word>::EvaluateBabyStep(ConstContextPtr<word> context,
                                           const Ct &input,
                                           const EvkMap<word> &evk_map,
                                           bool min_ks) const {
+  GpuTraceRange trace("cheddar:part:baby");
+  GpuTraceRange source_trace("cheddar:source:linear_transform");
   NPInfo input_np = input.GetNP();
   int num_main_primes = input_np.num_main_;
   int num_ter_primes = input_np.num_ter_;
@@ -620,7 +623,10 @@ void HoistHandler<word>::EvaluateBabyStep(ConstContextPtr<word> context,
     tmp_modup.emplace_back((num_q_primes + num_p_primes) * degree);
     tmp_modup_view.push_back(tmp_modup[i].View(num_p_primes * degree));
   }
-  mod_switcher.ModUp(tmp_modup_view, input.AxConstView());
+  {
+    GpuTraceRange trace("cheddar:part:shared_modup");
+    mod_switcher.ModUp(tmp_modup_view, input.AxConstView());
+  }
 
   // 2. Baby-step rotations
   Dv *input_bx_pseudo_modup;
@@ -684,8 +690,11 @@ void HoistHandler<word>::EvaluateBabyStep(ConstContextPtr<word> context,
             DvConstView<word>((*input_bx_pseudo_modup).data(),
                               num_q_primes * degree, 0)};
         // MAC
-        context->elem_handler_.Add(tmp_bx_view, input_np, tmp_bx_const_view,
-                                   {(*input_bx_pseudo_modup).ConstView()});
+        {
+          GpuTraceRange correction("cheddar:op:key_correction");
+          context->elem_handler_.Add(tmp_bx_view, input_np, tmp_bx_const_view,
+                                     {(*input_bx_pseudo_modup).ConstView()});
+        }
         // Automorphism
         context->Permute(bs[bs_idx], tmp, bs_idx);
       }
@@ -700,6 +709,8 @@ void HoistHandler<word>::EvaluateGiantStep(ConstContextPtr<word> context,
                                            Ct &res, const std::map<int, Ct> &bs,
                                            const EvkMap<word> &evk_map,
                                            bool min_ks) const {
+  GpuTraceRange trace("cheddar:part:giant");
+  GpuTraceRange source_trace("cheddar:source:linear_transform");
   AssertFalse(bs.empty(), "Hoist: bs should not be empty");
   const Ct &ref_ct = bs.begin()->second;
   NPInfo ref_np = ref_ct.GetNP();
@@ -852,8 +863,11 @@ void HoistHandler<word>::EvaluateGiantStep(ConstContextPtr<word> context,
       context->MultKeyNoModDown(tmp, tmp_modup, accum, key);
       std::vector<DvView<word>> tmp_bx_view = {tmp.BxView()};
 
-      context->elem_handler_.Add(tmp_bx_view, q_p_prime_np, {tmp.BxConstView()},
-                                 {accum.BxConstView()});
+      {
+        GpuTraceRange correction("cheddar:op:key_correction");
+        context->elem_handler_.Add(tmp_bx_view, q_p_prime_np, {tmp.BxConstView()},
+                                   {accum.BxConstView()});
+      }
       if (!final_accum_init) {
         context->Permute(final_accum, tmp, gs_idx);
         final_accum_init = true;

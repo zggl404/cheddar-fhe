@@ -65,6 +65,8 @@ def main():
                         cell['timing']=json.loads(line.removeprefix('TIMING '))
                     if line.startswith('RESULT '):
                         image = json.loads(line.removeprefix('RESULT '))
+                        if not image.get('plaintext_reference', True):
+                            raise RuntimeError('validation requires CHEDDAR_PLAINTEXT_REFERENCE=ON; reference comparisons are disabled')
                         cell['images'].append(image)
                         print(f"IMAGE cell={name} index={image['image']} error={image['max_abs_error']:.3g} prediction={image['prediction']}", flush=True)
                 cell['exit_code'] = process.wait()

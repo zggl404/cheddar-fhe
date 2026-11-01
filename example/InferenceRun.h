@@ -17,6 +17,13 @@
 #include "../include/common/InferenceTiming.h"
 
 namespace cheddar::example {
+#ifndef CHEDDAR_PLAINTEXT_REFERENCE
+#define CHEDDAR_PLAINTEXT_REFERENCE 1
+#endif
+inline constexpr bool kPlaintextReference=CHEDDAR_PLAINTEXT_REFERENCE;
+template<class F>void PlaintextReference(InferenceTiming& timing,F function) {
+  if constexpr(kPlaintextReference)timing.Cpu(InferencePhase::Reference,function);
+}
 struct RunOptions {
   std::string format="human", encoding="auto";
   std::string timing_file;
@@ -62,7 +69,8 @@ class RunReport {
   void AddImage(int image,const InferenceTimes& times) {
     inference+=times;images.emplace_back(image,times);
     if(options.Json()) {
-      std::cout<<"IMAGE_TIMING {\"image\":"<<image<<",";times.WriteFields(std::cout);std::cout<<"}\n"<<std::flush;
+      std::cout<<"IMAGE_TIMING {\"image\":"<<image<<",\"plaintext_reference\":"
+        <<(kPlaintextReference?"true":"false")<<",";times.WriteFields(std::cout);std::cout<<"}\n"<<std::flush;
     }
   }
   template<class F> void PrepareBoot(void (*sync)(),F function) {
@@ -74,12 +82,13 @@ class RunReport {
       const auto total=InferenceNanoseconds(begin_),model=total-boot_ns-inference.total_ns;
       if(model<0)throw std::runtime_error("overlapping run timing intervals");
       std::ofstream out(options.timing_file);
-      out<<"{";inference.WriteFields(out);
+      out<<"{\"plaintext_reference\":"<<(kPlaintextReference?"true":"false")<<",";inference.WriteFields(out);
       out<<",\"model_prepare_ms\":"<<InferenceMilliseconds(model)<<",\"boot_prepare_ms\":"<<InferenceMilliseconds(boot_ns)
          <<",\"total_ms\":"<<InferenceMilliseconds(total)<<",\"images\":[";
       for(size_t i=0;i<images.size();++i) {
         if(i)out<<",";
-        out<<"{\"image\":"<<images[i].first<<",";images[i].second.WriteFields(out);out<<"}";
+        out<<"{\"image\":"<<images[i].first<<",\"plaintext_reference\":"
+          <<(kPlaintextReference?"true":"false")<<",";images[i].second.WriteFields(out);out<<"}";
       }
       out<<"]}\n";
       if(!out)throw std::runtime_error("cannot write timing file");
@@ -94,7 +103,7 @@ inline void PrintInference(const std::string& model,int image,int label,int pred
                            double max_layer_error,uint64_t boots) {
   std::ostringstream out;out<<std::fixed<<std::setprecision(9);
   out<<"\n"<<model<<" image="<<image<<" label="<<label<<" prediction="<<prediction<<"\n";
-  if(plain.size()==10&&cipher.size()==10) {
+  if(kPlaintextReference&&plain.size()==10&&cipher.size()==10) {
     out<<"  Class       Plaintext ReLU        Decrypted FHE       Absolute error\n";
     double maximum=0,total=0;
     for(size_t i=0;i<10;++i) {
@@ -103,7 +112,12 @@ inline void PrintInference(const std::string& model,int image,int label,int pred
     }
     out<<"  FHE vs plaintext: max_abs="<<maximum<<", mean_abs="<<total/10<<"\n";
   }
-  out<<"  Same-polynomial layer error="<<max_layer_error<<", Boot calls="<<boots<<"\n";
+  if constexpr(kPlaintextReference)out<<"  Same-polynomial layer error="<<max_layer_error<<", Boot calls="<<boots<<"\n";
+  else {
+    out<<"  Plaintext reference: disabled; comparison unavailable\n";
+    for(size_t i=0;i<cipher.size();++i)out<<"  Class "<<i<<" decrypted FHE="<<cipher[i]<<'\n';
+    out<<"  Boot calls="<<boots<<'\n';
+  }
   std::cout<<out.str()<<std::flush;
 }
 

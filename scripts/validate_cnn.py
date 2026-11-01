@@ -55,7 +55,10 @@ def main():
                     if line.startswith('TIMING '):
                         cell['timing']=json.loads(line.removeprefix('TIMING '))
                     if line.startswith('RESULT '):
-                        row=json.loads(line[7:]);cell['images'].append(row)
+                        row=json.loads(line[7:])
+                        if not row.get('plaintext_reference', True):
+                            raise RuntimeError('validation requires CHEDDAR_PLAINTEXT_REFERENCE=ON; reference comparisons are disabled')
+                        cell['images'].append(row)
                         print(f"IMAGE cell={name} image={row['image']} error={row['max_abs_error']:.4g}",flush=True)
                 cell['exit_code']=process.wait()
             finally:

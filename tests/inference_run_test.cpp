@@ -35,7 +35,7 @@ int main(int argc,char** argv) {
         Work();
       });
       timer.Gpu(InferencePhase::Activation,Work);
-      timer.Cpu(InferencePhase::Reference,Work);
+      PlaintextReference(timer,Work);
       report.AddImage(image,timer.Finish(begin));
     }
     report.complete=true;return 0;
@@ -65,8 +65,18 @@ int main(int argc,char** argv) {
   std::vector<double> plain(10,1),cipher(10,1);cipher[3]=1.25;
   PrintInference("test",0,3,3,plain,cipher,1e-5,2);
   std::cout.rdbuf(saved);
-  assert(output.str().find("max_abs=0.250000000, mean_abs=0.025000000")!=std::string::npos);
+  if constexpr(kPlaintextReference)assert(output.str().find("max_abs=0.250000000, mean_abs=0.025000000")!=std::string::npos);
+  else {
+    assert(output.str().find("Plaintext reference: disabled")!=std::string::npos);
+    assert(output.str().find("max_abs=")==std::string::npos);
+    assert(output.str().find("decrypted FHE=")!=std::string::npos);
+  }
   assert(output.str().find("\n  Class")!=std::string::npos);
+  InferenceTiming reference_timer;bool reference_called=false;const auto reference_begin=InferenceClock::now();
+  PlaintextReference(reference_timer,[&]{reference_called=true;Work();});
+  const auto reference_time=reference_timer.Finish(reference_begin).phases[static_cast<size_t>(InferencePhase::Reference)];
+  assert(reference_called==kPlaintextReference);
+  assert(kPlaintextReference?reference_time>0:reference_time==0);
   // Nested owners partition elapsed time; a same-owner child never adds a
   // second duration or synchronization. Reset after unwinding must recover.
   InferenceTiming profiled(Sync);profiled.SetProfiling(true);

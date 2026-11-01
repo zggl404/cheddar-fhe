@@ -99,6 +99,7 @@ class InferenceTiming {
     active_=true;
     // The entry drain is charged to this interval as well; no wait disappears.
     const auto begin=InferenceClock::now();
+    GpuTraceRange trace("phase", kInferenceFields[index]);
     try { if(gpu)synchronize_();function();if(gpu)synchronize_(); }
     catch(...) {active_=false;profile_.Abort();throw;}
     times_.phases[index]+=InferenceNanoseconds(begin);active_=false;
