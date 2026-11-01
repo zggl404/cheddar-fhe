@@ -176,11 +176,14 @@ FHE 对精确 ReLU 的误差包含激活多项式近似；逐层 `1e-2` 校验�
 准备好上面十个模型的 `.bin` 权重、CIFAR 文件、GNU `time` 和 Nsight Systems CLI。
 脚本默认逐个处理全部十个模型，每个模型运行两次：无 NVTX/Event 的粗粒度墙钟基线，
 以及独立的 NVTX 采集。两次都关闭逐操作 CPU 同步计时。
+本批处理脚本默认开启 Hybrid 拆分，两次均采用相同的拆分路径，基线用于对照采集开销。
 
 ```bash
 python scripts/benchmark_nvtx.py \
   --build-dir build --models-dir models --cifar "$CIFAR_BIN" \
-  --output validation/nvtx-all --count 6 --warmup 1
+  --output validation/nvtx-all-split \
+  --count 6 --warmup 1 \
+  --split-hybrid on
 ```
 
 `--output` 必须是新目录。`nsys` 不在 PATH 时添加 `--nsys /实际路径/nsys`。
@@ -213,7 +216,9 @@ python scripts/benchmark_nvtx.py \
 这套相减口径适合观察“整次推理中，除已识别 Keyswitch kernel 之外的剩余时间”。
 剩余时间包含主机提交/等待、设备空闲、输入、明文参考（若开启）、解密校验、运行期编码及尚未拆开的 Hybrid。
 它和纯 GPU Other 有不同含义，也不能用基线 Inference 减去另一次 NVTX 的 Keyswitch。
-默认保留融合路径；要采用拆分诊断路径可加 `--split-hybrid on`，此时 Hybrid 必须为零。
+本脚本的 `--split-hybrid` 默认 `on`，Hybrid 必须为零；共同短基前置计入 NonKeyswitch。
+需要测原融合路径时显式加 `--split-hybrid off`。拆分会改变执行路径并可能增加耗时，报告中保留所选模式。
+普通 `run_inference.py` 入口的拆分默认仍为 `off`。
 当前相减限定为无 kernel 重叠的执行，脚本发现重叠会拒绝发布这个差值。
 
 两次各自满足：

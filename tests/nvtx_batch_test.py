@@ -97,6 +97,7 @@ with tempfile.TemporaryDirectory(prefix='cheddar-nvtx-batch-test-') as temporary
     assert result.returncode==0,(result.stdout,result.stderr)
     summary=json.loads((folder/'all/summary.json').read_text());rows=summary['models']
     assert len(rows)==len(MODELS) and all(r['status']=='PASS' for r in rows)
+    assert summary['split_hybrid']=='on' and all(r['split_hybrid']=='on' for r in rows)
     assert not rows[0]['keys_prepared_by_script'] and not rows[0]['temporary_keys_removed']
     assert all(r['keys_prepared_by_script'] and r['temporary_keys_removed'] for r in rows[1:])
     assert sorted(p.name for p in keys.iterdir())==['resnet20']
@@ -107,14 +108,15 @@ with tempfile.TemporaryDirectory(prefix='cheddar-nvtx-batch-test-') as temporary
     assert [r['status'] for r in failed]==['FAILED','PASS'] and failed[0]['temporary_keys_removed']
     assert (keys/'resnet20/keep').read_text()=='never remove'
     for row in rows:
-        assert row['nvtx_keyswitch_ms']==3 and row['nvtx_hybrid_ms']==1 and row['nvtx_other_kernel_ms']==2
-        assert row['non_keyswitch_residual_ms']==7 and row['measured_count']==row['warmup_count']==1
+        assert row['nvtx_keyswitch_ms']==4 and row['nvtx_hybrid_ms']==0 and row['nvtx_other_kernel_ms']==2
+        assert row['non_keyswitch_residual_ms']==6 and row['measured_count']==row['warmup_count']==1
         assert row['baseline']['time_real_ms']==90 and row['baseline']['key_load_ms']==4
     assert len(list(csv.DictReader((folder/'all/summary.csv').open())))==len(MODELS)
-    result=subprocess.run([*base,'--output',str(folder/'split'),'--models','resnet20','--split-hybrid','on'],text=True,capture_output=True)
+    result=subprocess.run([*base,'--output',str(folder/'fused'),'--models','resnet20','--split-hybrid','off'],text=True,capture_output=True)
     assert result.returncode==0,(result.stdout,result.stderr)
-    split=json.loads((folder/'split/summary.json').read_text())['models'][0]
-    assert split['nvtx_hybrid_ms']==0 and split['nvtx_keyswitch_ms']==4 and split['non_keyswitch_residual_ms']==6
+    fused=json.loads((folder/'fused/summary.json').read_text())['models'][0]
+    assert fused['split_hybrid']=='off' and fused['nvtx_hybrid_ms']==1
+    assert fused['nvtx_keyswitch_ms']==3 and fused['non_keyswitch_residual_ms']==7
     (models/'vgg11.bin').write_text('FAIL')
     result=subprocess.run([*base,'--output',str(folder/'failed'),'--models','vgg11','resnet20'],text=True,capture_output=True)
     assert result.returncode==1

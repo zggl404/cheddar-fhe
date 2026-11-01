@@ -157,7 +157,8 @@ def main():
     parser.add_argument('--count',type=int,default=6)
     parser.add_argument('--warmup',type=int,default=1)
     parser.add_argument('--encode-mode',choices=('auto','pre','stream'),default='auto')
-    parser.add_argument('--split-hybrid',choices=('off','on'),default='off')
+    parser.add_argument('--split-hybrid',choices=('off','on'),default='on',
+                        help='split mixed operations (default: on); off uses the original fused path')
     parser.add_argument('--nsys',default='nsys')
     parser.add_argument('--time-binary',default='/usr/bin/time')
     args=parser.parse_args()
