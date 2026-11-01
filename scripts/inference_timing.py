@@ -6,8 +6,11 @@ FHE_FIELDS = ('linear_ms', 'bootstrap_ms', 'activation_ms', 'graph_ops_ms')
 LEAF_FIELDS = ('input_ms', 'runtime_weight_prepare_ms', *FHE_FIELDS,
                'reference_ms', 'validation_output_ms', 'dispatch_ms')
 PROFILE_FIELDS = ('keyswitch_ms', 'non_keyswitch_ms', 'hybrid_ms')
-KEY_OPS = ('modup', 'pseudo_modup', 'key_mult', 'moddown', 'automorphism', 'sparse_to_dense', 'key_correction')
-HYBRID_OPS = ('fused_baby', 'moddown_rescale', 'automorphism_accum', 'shared_lift')
+KEY_OPS = ('modup', 'pseudo_modup', 'key_mult', 'moddown', 'automorphism', 'sparse_to_dense', 'key_correction', 'fused_baby')
+HYBRID_OPS = ('moddown_rescale', 'automorphism_accum', 'shared_lift')
+NON_KEY_OPS = ('shared_lift_common',)
+PROFILE_OPS = (*KEY_OPS, *HYBRID_OPS, *NON_KEY_OPS)
+SPLIT_FORBIDDEN_OPS = HYBRID_OPS
 IMAGE_FIELDS = ('inference_ms', 'fhe_eval_ms', *LEAF_FIELDS)
 
 
@@ -41,9 +44,9 @@ def validate_image(row):
         if row['inference_ns'] != row['keyswitch_ns'] + row['non_keyswitch_ns'] + row['hybrid_ns']:
             raise ValueError('operation wall-clock nanoseconds do not sum')
         ops = row['profile_operations']
-        if row.get('split_hybrid', False) and any(ops[k]['ns'] or ops[k]['calls'] for k in HYBRID_OPS):
-            raise ValueError('hybrid operation remains in split execution')
-        for name in (*KEY_OPS, *HYBRID_OPS):
+        if row.get('split_hybrid', False) and any(ops[k]['ns'] or ops[k]['calls'] for k in SPLIT_FORBIDDEN_OPS):
+            raise ValueError('unsplit hybrid operation remains in split execution')
+        for name in PROFILE_OPS:
             for key in ('ns', 'calls'):
                 if type(ops[name][key]) is not int or ops[name][key] < 0:
                     raise ValueError(f'invalid operation counter: {name}.{key}')
@@ -85,7 +88,7 @@ def validate_run(row):
         for key in ('inference_ns', 'keyswitch_ns', 'non_keyswitch_ns', 'hybrid_ns'):
             if row[key] != sum(image[key] for image in images):
                 raise ValueError(f'integer image sum mismatch: {key}')
-        for name in (*KEY_OPS, *HYBRID_OPS):
+        for name in PROFILE_OPS:
             for key in ('ns', 'calls'):
                 if row['profile_operations'][name][key] != sum(image['profile_operations'][name][key] for image in images):
                     raise ValueError(f'operation image sum mismatch: {name}.{key}')
@@ -126,7 +129,7 @@ def print_human(row):
         print(f'    {label:34}: {row[key]:.3f}')
     if row.get('ks_profile', False):
         print('\n  Inference by operation (same stage; synchronized profiling)')
-        for key in PROFILE_FIELDS[:2] if row.get('split_hybrid', False) else PROFILE_FIELDS:
+        for key in PROFILE_FIELDS:
             print(f'    {key:34}: {row[key]:.3f}')
     print(f"  Sum / end-to-end wall                : {row['total_ms']:.3f}")
     if row['image_count'] > 1 or summary['warmup_count']:

@@ -9,8 +9,15 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
 from analyze_gpu_activity import analyze, classify, union_ns
 
 assert union_ns([(1, 5), (3, 7), (10, 12)]) == 8
-assert classify({'op':'fused_baby','source':'linear_transform'}) == 'hybrid'
+assert classify({'op':'fused_baby','source':'linear_transform'}) == 'keyswitch'
+assert classify({'op':'shared_lift_common','source':'sparse_to_dense'}) == 'other'
 assert classify({'op':'key_correction','source':'rotation'}) == 'keyswitch'
+assert classify({'op':'fused_baby','source':'linear_transform'},True) == 'keyswitch'
+assert classify({'op':'shared_lift_common','source':'sparse_to_dense'},True) == 'other'
+for op in ('moddown_rescale','automorphism_accum','shared_lift'):
+    try: classify({'op':op,'source':'linear_transform'},True)
+    except ValueError: pass
+    else: raise AssertionError('accepted unsplit work: '+op)
 for labels in ({'op': 'unknown'}, {'op': 'modup'}):
     try:
         classify(labels)
@@ -50,6 +57,9 @@ with tempfile.TemporaryDirectory(prefix='cheddar-activity-test-') as temporary:
     log = folder/'worker.log'
     log.write_text('GPU_TRACE_AUDIT '+json.dumps({'image': 0, 'ranges': len(scopes)-1})+'\n')
     result = analyze(database, folder/'valid', 0, log)
+    try: analyze(database, folder/'unsplit', 0, log, True)
+    except ValueError as error: assert 'unsplit hybrid operation' in str(error)
+    else: raise AssertionError('accepted mixed work in split NVTX report')
     row = result['images'][0]
     assert row['kernel_total_ns'] == 45 and row['kernel_keyswitch_ns'] == 30
     assert row['kernel_hybrid_ns'] == 10 and row['kernel_other_ns'] == 5

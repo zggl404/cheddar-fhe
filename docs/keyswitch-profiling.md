@@ -41,10 +41,12 @@ JSON 额外提供整数纳秒、各操作独占耗时和调用次数，检查三
 | moddown | Keyswitch | 从 QP 到 Q 的切换降模 |
 | automorphism | Keyswitch | 旋转/共轭所需的独立置换 |
 | sparse_to_dense | Keyswitch | Boot 的专用 StD 乘密钥与修正；内部 ModDown 单独独占计时 |
-| fused_baby | Hybrid | baby-step KeyMult、MAC、automorphism 融合 |
+| key_correction | Keyswitch | 必要的原密文项修正，不包含网络结果累加 |
+| fused_baby | Keyswitch | baby-step KeyMult、必要修正、automorphism 融合；拆分模式保留融合 |
 | moddown_rescale | Hybrid | 联合 ModDown 与 Rescale |
 | automorphism_accum | Hybrid | 置换与多项累加融合 |
-| shared_lift | Hybrid | Boot 的 ax 同时提升到 Q 与 P，P 部分供 StD 使用 |
+| shared_lift | Hybrid | 融合模式中 Boot ax 的共同前置及 Q/P 提升 |
+| shared_lift_common | Non-keyswitch | 拆分模式仍由 Q/P 两路共同使用的短基 INTT/归一化，计一次 |
 
 独立明文乘法/累加（包括 giant-step 的 plaintext multiplication/accumulation）、
 普通 Rescale、Boot 的 bx 提升和其余运算属于 Non-keyswitch。NTT 的归属取决于调用语义，
@@ -82,22 +84,23 @@ python scripts/run_inference.py --model resnet20 --cifar /data/test_batch.bin \
   --ks-profile on --split-hybrid on
 ```
 
-`--split-hybrid off|on` 默认 off，与采集开关独立。开启后执行独立步骤，允许更慢；
-关闭采集也可以运行拆分路径。两类计时满足 `inference_ns = keyswitch_ns + non_keyswitch_ns`。
-人类可读日志只显示这两类，JSON 保留 `hybrid_ns=0` 及各混合 scope 的零调用数便于审计。
-如果拆分模式仍进入任何 Hybrid scope，C++ 和 Python 校验均拒绝结果，不能改标签消掉时间。
+`--split-hybrid off|on` 默认 off，与三个采集开关独立。开启后采用诊断执行，允许更慢。
+三类之和仍等于相应父区间；拆分模式要求 Hybrid 为零，共同短基前置 `shared_lift_common` 归 Non-keyswitch。
+C++ 与 Event/NVTX 分析器拒绝残留的 `moddown_rescale`、`automorphism_accum`、`shared_lift`。
 
-| 原混合路径 | 拆分执行 |
+| 原路径 | 当前拆分执行 |
 |---|---|
-| ModDownAndRescale | QP→Q ModDown，随后独立 Rescale |
-| BSFusedKeyMult | KeyMult、独立 Add、独立 Automorphism |
-| PermuteAccum | 独立 Permute 与 Add，临时 sum 完成后写回 |
-| Boot ax 的共享 Q/P 提升 | 原短基 INTT 与 Q 提升/NTT 属于 bootstrap 非切换部分；再独立提升/NTT 到 P，归切换 ModUp |
+| ModDownAndRescale | QP→Q ModDown（KS），随后独立 Rescale（NonKS） |
+| BSFusedKeyMult | 保持融合，整段归 KS；其中没有明文矩阵乘法 |
+| HRotAdd/HConjAdd 的 PermuteAccum | 独立 Permute（KS）与额外 Add（NonKS），保留别名安全的临时缓冲 |
+| giant-step 的延后 b 修正 | 每次旋转先补 b（KS）并置换（KS），再做跨 giant-step 累加（NonKS） |
+| Boot ax 的共享 Q/P 提升 | 共同短基 INTT/归一化（NonKS），Q 扩展/NTT（NonKS），P 扩展/NTT（KS） |
 
-Boot 拆分使用与原路径**相同的短基整数代表元**，不从已提升的 Q 任意重构 P；
-后者会改变代表元，可能影响 StD 的数值正确性。短基 INTT 的结果被复用一次，
-将该共同前置步骤归 bootstrap Non-keyswitch，单独的 P 扩展归 Keyswitch。
-这是明确的数据流归属约定，不能解释为原共享 kernel 内部可精确分割的指令时间。
+Boot 两条扩展分支使用与原路径相同的短基整数代表元，不从已提升 Q 任意重构 P。
+共同短基变换只做一次、计一次，按约定归 Boot 执行内的 Non-keyswitch；P 路独立扩展归 Keyswitch。
+
+`PermuteAccum` 还按实际输入区分：全零旋转的加法归 NonKS；只有一个置换且没有额外项时归 KS。
+在 giant-step，必要 b 修正与网络结果累加由调用层区分，不能把所有 Add 统一划入 NonKS。
 
 其余同类融合保留，例如 giant-step 明文乘法/累加均属 Non-keyswitch，NTT 内部优化
 均随所在操作归类，不要求全部 GPU kernel 都取消融合。
@@ -113,14 +116,14 @@ Boot 拆分使用与原路径**相同的短基整数代表元**，不从已提�
 读完后再写 dst，也覆盖单项/零旋转以及额外项与 dst 别名的情形。
 
 针对性验证在 N16/N17、Q 与 QP 下逐系数比较取模后的结果，覆盖 1、2、10 项累加，
-有/无额外别名项，并验证乘法、线性层及完整 Boot。四类 Hybrid 均在融合运行中被覆盖，
-拆分运行的 Hybrid 次数/耗时均为 0。Boot 融合/拆分最大差异分别为 `7.32914e-7`、
+有/无额外别名项，并验证乘法、线性层及完整 Boot。下述是旧拆分归属约定的历史结果；当时拆分运行的 Hybrid 次数/耗时均为 0。
+当前方案也要求 Hybrid 清零，但保持 FusedBaby 融合，旧分项耗时不能直接套用。Boot 融合/拆分最大差异分别为 `7.32914e-7`、
 `2.06027e-6`，输出 level 分别保持 8、9；均通过 1e-3 门槛。
 
 全部十个模型最终 85 配置 / 225 次整网验证及运行取舍见[48 GB 报告](keyswitch-kms-gpu48.md)。
 
-分类采用表中的实现级边界：`key_mult` 包括该 helper 内必要的密文项修正，
-`fused_baby` 保守地整段记为 Hybrid；拆分后的独立 Add 记入 Non-keyswitch。
+分类采用表中的语义边界：密钥乘加、必要密文修正和 fused_baby 都归 Keyswitch；
+网络结果的独立累加归 Non-keyswitch，共同短基前置归 Non-keyswitch。
 因此 Keyswitch 是这里明确定义的切换相关墙钟区间，不能解释为仅 key-GEMM 指令时间。
-比较不同执行模式时应同时看完整推理与三类/两类之和，不能把某类时间变化直接当作
+比较不同执行模式时应同时看完整推理与三类之和，不能把某类时间变化直接当作
 同一组 GPU 指令的净加速或精确分摊。这一归属约定与同步开销均保留在原始结果中。

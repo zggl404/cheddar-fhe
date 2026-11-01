@@ -156,7 +156,7 @@ C++ 的内部计时文件用于外层汇总，不能作为独立进程端到端�
 
 `--time-cpu on`（旧别名 `--ks-profile on`）的公开三分类以 `fhe_eval_ms` 为父区间；
 旧 schema v2 内部扁平分类仍以 `inference_ms` 为父区间。
-`--split-hybrid on` 切换到诊断执行，配合采集将 Hybrid 拆为两类。二者默认关闭，
+`--split-hybrid on` 切换到诊断执行，按语义拆开混合步骤，共同短基前置归 NonKeyswitch，Hybrid 为零。开关默认关闭，
 开启采集会同步、拆分会增加执行与临时空间开销，详见[边界和实测](keyswitch-profiling.md)。
 这些分类与原阶段子项是并列视角，不是额外相加的一段时间。
 

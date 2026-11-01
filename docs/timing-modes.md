@@ -58,14 +58,25 @@ python scripts/run_inference.py --model resnet20 --cifar /data/test_batch.bin \
 
 | 分类 | 操作 |
 |---|---|
-| KeyswitchTime | ModUp、PseudoModUp、evaluation-key 乘加、必要 ciphertext correction、独立 ModDown、独立置换、StD |
-| Hybrid | fused_baby、共享 lift、ModDown+Rescale、置换+累加等不能独立拆出的混合区间 |
-| NonKeyswitchTime | FHE 边界内剩余工作 |
+| KeyswitchTime | ModUp、PseudoModUp、evaluation-key 乘加、必要 ciphertext correction、fused_baby、独立 ModDown、独立置换、StD |
+| Hybrid | 共享 lift、ModDown+Rescale、置换+累加等不能独占归属的区间 |
+| NonKeyswitchTime | FHE 边界内剩余工作，包括拆分后的共同短基前置 |
 
-本次统一将 `fused_baby` 放入 Hybrid；旧 GPU activity 报告把它归入 Keyswitch，
-不能直接用旧报告的分类数值与新结果比较。必要 ciphertext correction 现在也进入 CPU profile，
-避免 CPU 与 GPU 分析器的范围不一致。共享的 ModUp 只按实际执行记录一次。
-`--split-hybrid on` 仍是改变执行路径的诊断开关，不是第四种计时方式。
+`fused_baby` 融合的是密钥乘加、必要密文修正和置换，全部归 Keyswitch，
+在拆分模式中也保留融合。giant-step 明文乘加仍归 NonKeyswitch，保留自身融合。
+`eacaa59` 版本曾保守地把 fused_baby 放入 Hybrid，旧分类数值不能与当前分类直接比较。
+
+`--split-hybrid on` 是改变执行路径的诊断开关，不是第四种计时方式：
+
+- ModDown+Rescale 拆为独立 ModDown（KS）及 Rescale（NonKS）。
+- HRotAdd/HConjAdd 拆为置换（KS）和额外加法（NonKS）。
+- giant-step 先完成每次旋转的 b 项修正（KS）和置换（KS），再累加不同 giant-step（NonKS）。
+- SharedLift 拆为共同短基 INTT/归一化（NonKS）、Q 扩展/NTT（NonKS）、P 扩展/NTT（KS）。
+
+拆分后 Hybrid 必须为零。共同前置只执行、记录一次，统一归 NonKeyswitch；
+保留 `shared_lift_common` 子项供审计。C++ 和两个 GPU 分析器都会拒绝残留的混合操作。
+拆分增加临时数据读写/launch，联合降模与顺序降模还可能有舍入差异；
+拆分时间用于诊断，不能反推原融合 kernel 内部的唯一耗时比例。
 
 ## 三种数值各自代表什么
 

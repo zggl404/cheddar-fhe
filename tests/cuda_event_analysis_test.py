@@ -20,6 +20,15 @@ with tempfile.TemporaryDirectory(prefix='cheddar-event-analysis-') as folder:
     result=analyze(root/'events.csv',root/'worker.log',root/'valid',0)
     assert result['mean_ms']==dict(keyswitch=2,hybrid=3,other=1,total=6)
     assert result['sources']['linear_transform']['keyswitch']==2
+    try:analyze(root/'events.csv',root/'worker.log',root/'unsplit',0,True)
+    except ValueError:pass
+    else:raise AssertionError('accepted ModDownRescale in split event report')
+    semantic=[(*rows[0][:7],'fused_baby',2),
+              (*rows[1][:5],'sparse_to_dense','none','shared_lift_common',3),rows[2]]
+    write(semantic)
+    result=analyze(root/'events.csv',root/'worker.log',root/'semantic',0,True)
+    assert result['mean_ms']==dict(keyswitch=2,hybrid=0,other=4,total=6)
+    assert result['sources']['sparse_to_dense']['other']==3
     for bad in [rows+[rows[-1]], [rows[0],(0,1,0,1,*rows[1][4:]),rows[2]]]:
         write(bad)
         try:analyze(root/'events.csv',root/'worker.log',root/'invalid',0)

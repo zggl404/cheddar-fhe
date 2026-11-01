@@ -1040,7 +1040,10 @@ void ElementWiseHandler<word>::PermuteAccumWorker(
     std::vector<DvView<word>> &dst, const NPInfo &np,
     const std::vector<int> &permute_amounts,
     const std::vector<std::vector<DvConstView<word>>> &srcs) const {
-  ProfileScope profile(ProfileOp::AutomorphismAccum);
+  bool permutes=false;for(int amount:permute_amounts)permutes|=amount!=0;
+  const auto op=!permutes?ProfileOp::Other:
+      (permute_amounts.size()==1&&srcs.size()==1?ProfileOp::Automorphism:ProfileOp::AutomorphismAccum);
+  ProfileScope profile(op);
   // Check the size of the vectors
   int num_poly = dst.size();
   AssertTrue(num_poly > 0 && num_poly <= max_num_poly_,

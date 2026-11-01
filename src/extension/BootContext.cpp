@@ -230,12 +230,15 @@ void BootContext<word>::ModUpToMax(Ct &res, const Ct &input,
   this->elem_handler_.ModUpToMax(tmp_bx_view, res.BxConstView());
   this->ntt_handler_.NTT(tmp_bx_view, max_level_np, tmp_bx.ConstView(0), true);
 
-  // Fused mode shares the ax lift/NTT across Q and P. Diagnostic mode keeps
-  // the bootstrap INTT/Q lift in Non-keyswitch and extends/NTTs P separately
-  // for StD. Both use the identical centered short-base representative.
+  // Charge the common short-base transform to Bootstrap execution (NonKS).
+  // Q and P branches reuse the same centered representative.
   max_level_np.num_aux_ = tmp_ax_num_aux;
   if(sse&&this->param_.split_hybrid_) {
-    this->ntt_handler_.INTTAndMultConst(res_ax_view,np,working_ct->AxConstView(),mod_max_intt_const_.ConstView(0));
+    {
+      GpuTraceRange trace("cheddar:source:sparse_to_dense");
+      ProfileScope profile(ProfileOp::SharedLiftCommon);
+      this->ntt_handler_.INTTAndMultConst(res_ax_view,np,working_ct->AxConstView(),mod_max_intt_const_.ConstView(0));
+    }
     NPInfo q_np=max_level_np;q_np.num_aux_=0;
     DvView<word> q_view(tmp_ax.data(),L*degree,0);
     this->elem_handler_.ModUpToMax(q_view,res.AxConstView());

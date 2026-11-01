@@ -34,7 +34,7 @@ int main(int argc,char** argv) {
       timer.Cpu(InferencePhase::Input,Work);
       timer.Gpu(InferencePhase::Bootstrap,[&]{
         ProfileScope key(ProfileOp::KeyMult);Work();
-        {ProfileScope part(report.options.split_hybrid?ProfileOp::ModDown:ProfileOp::ModDownRescale);Work();}
+        {ProfileScope part(report.options.split_hybrid?ProfileOp::SharedLiftCommon:ProfileOp::ModDownRescale);Work();}
         Work();
       });
       timer.Gpu(InferencePhase::Activation,Work);
@@ -116,6 +116,19 @@ int main(int argc,char** argv) {
   assert(traced.operations.calls[static_cast<size_t>(ProfileOp::KeyMult)]==2);
   assert(traced.operations.Keyswitch()+traced.operations.Hybrid()<=traced.total_ns);
   traced.split_hybrid=true;rejected=false;try {traced.Validate();}catch(const std::runtime_error&){rejected=true;}assert(rejected);
+  assert(IsKeyswitch(ProfileOp::FusedBaby)&&!IsHybrid(ProfileOp::FusedBaby));
+  assert(!IsKeyswitch(ProfileOp::SharedLiftCommon)&&!IsHybrid(ProfileOp::SharedLiftCommon));
+  profiled.SetSplitHybrid(true);profiled.Reset();begin=InferenceClock::now();
+  profiled.Gpu(InferencePhase::Bootstrap,[]{
+    {ProfileScope fused(ProfileOp::FusedBaby);Work();}
+    {ProfileScope common(ProfileOp::SharedLiftCommon);Work();}
+  });
+  auto semantic=profiled.Finish(begin);
+  assert(semantic.operations.Keyswitch()>0&&semantic.operations.Hybrid()==0);
+  assert(semantic.operations.ns[static_cast<size_t>(ProfileOp::SharedLiftCommon)]>0);
+  semantic.Validate();
+  semantic.operations.calls[static_cast<size_t>(ProfileOp::SharedLift)]=1;
+  rejected=false;try {semantic.Validate();}catch(const std::runtime_error&){rejected=true;}assert(rejected);
   profiled.Reset();
   try {profiled.Gpu(InferencePhase::Linear,[]{ProfileScope key(ProfileOp::ModUp);throw std::runtime_error("probe");});}
   catch(const std::runtime_error&){}

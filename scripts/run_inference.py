@@ -165,14 +165,14 @@ def main():
                     print('TIMING ' + json.dumps(legacy, separators=(',', ':')))
             if events:
                 from analyze_cuda_events import analyze
-                analysis = analyze(csv, log, folder/'event-analysis', args.warmup)
+                analysis = analyze(csv, log, folder/'event-analysis', args.warmup, args.split_hybrid=='on')
                 mean = analysis['mean_ms']
                 reports['CUDA_EVENT'] = category_report('cuda_event_exclusive_default_stream',
                     'fhe_default_stream_elapsed', mean['keyswitch'], mean['other'], mean['hybrid'],
                     args.warmup, len(analysis['measured_images']))
             if nvtx:
                 from analyze_gpu_activity import analyze
-                analysis = analyze(folder/'nvtx.sqlite', folder/'nvtx-analysis', args.warmup, log)
+                analysis = analyze(folder/'nvtx.sqlite', folder/'nvtx-analysis', args.warmup, log, args.split_hybrid=='on')
                 mean = analysis['mean_ms']
                 reports['NVTX'] = category_report('nsys_gpu_activity_launch_correlation',
                     'fhe_kernel_duration_sum', mean.get('kernel_keyswitch', 0), mean.get('kernel_other', 0),

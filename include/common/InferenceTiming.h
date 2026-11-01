@@ -36,8 +36,9 @@ struct InferenceTimes {
       throw std::runtime_error("overlapping operation timing intervals");
     if(operations.enabled&&operations.Keyswitch()+operations.Hybrid()>Fhe())
       throw std::runtime_error("operation profile exceeds FHE evaluation boundary");
-    if(split_hybrid&&operations.enabled)for(size_t i=static_cast<size_t>(ProfileOp::FusedBaby);i<kProfileOps;++i)
-      if(operations.calls[i]||operations.ns[i])throw std::runtime_error("hybrid operation remains in split execution");
+    if(split_hybrid&&operations.enabled)for(size_t i=1;i<kProfileOps;++i)
+      if(ForbiddenInSplit(static_cast<ProfileOp>(i))&&(operations.calls[i]||operations.ns[i]))
+        throw std::runtime_error("unsplit hybrid operation remains in split execution");
   }
   InferenceTimes& operator+=(const InferenceTimes& other) {
     other.Validate();

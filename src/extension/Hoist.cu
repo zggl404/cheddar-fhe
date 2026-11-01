@@ -663,7 +663,7 @@ void HoistHandler<word>::EvaluateBabyStep(ConstContextPtr<word> context,
   // it reduces the number of global memory reads/writes for the intermediate
   // results and ModUp(a).
   bool can_fuse_bs = beta <= (1 << max_log_beta_);
-  if (kFuseBSKeyMult && !context->param_.split_hybrid_ && can_fuse_bs) {
+  if (kFuseBSKeyMult && can_fuse_bs) {
     std::vector<int> rotations;
     for (const auto &bs_idx : bs_indices_) {
       if (bs_idx != 0) {
@@ -788,8 +788,11 @@ void HoistHandler<word>::EvaluateGiantStep(ConstContextPtr<word> context,
       std::vector<DvView<word>> pt_mult_bx_view_vec = {pt_mult_bx_view};
       std::vector<DvConstView<word>> bx_pseudo_view = {
           DvView<word>((*bx_pseudo).data(), num_q_primes * degree, 0)};
-      context->elem_handler_.Add(pt_mult_bx_view_vec, q_prime_np,
-                                 {pt_mult_bx_view}, bx_pseudo_view);
+      {
+        ProfileScope correction(ProfileOp::KeyCorrection);
+        context->elem_handler_.Add(pt_mult_bx_view_vec, q_prime_np,
+                                   {pt_mult_bx_view}, bx_pseudo_view);
+      }
       context->Mult(pt_mult.at(gs_idx), pt_mult.at(gs_idx), pt);
 
       ct_bx_ax_view.push_back(
@@ -956,15 +959,22 @@ void HoistHandler<word>::EvaluateGiantStepOptimized(
     mod_switcher.ModUp(tmp_modup_view, tmp_moddown_view);
     const auto &key = evk_map.GetRotationKey(gs_idx);
 
-    if (first & !gs_idx_0_exists) {
-      context->MultKeyNoModDown(*final_accum, tmp_modup, ct, key);
-      context->Permute(*final_accum, *final_accum, gs_idx);
-    } else {
-      context->MultKeyNoModDown(tmp, tmp_modup, ct, key);
-      context->Permute(tmp, tmp, gs_idx);
-      context->Add(*final_accum, *final_accum, tmp);
+    Ct& switched=(first&&!gs_idx_0_exists)?*final_accum:tmp;
+    context->MultKeyNoModDown(switched, tmp_modup, ct, key);
+    if(context->param_.split_hybrid_) {
+      // Complete each rotation's key correction before the network sum.
+      ProfileScope correction(ProfileOp::KeyCorrection);
+      std::vector<DvView<word>> bx{switched.BxView()};
+      context->elem_handler_.Add(bx,ref_ct_np,{switched.BxConstView()},{ct.BxConstView()});
     }
+    context->Permute(switched, switched, gs_idx);
+    if(&switched!=final_accum)context->Add(*final_accum, *final_accum, switched);
     first = false;
+  }
+
+  if(context->param_.split_hybrid_) {
+    EvaluateFinalModDown(context,res,*final_accum,input_num_slots,input_scale);
+    return;
   }
 
   std::vector<const Dv *> ct_bx;

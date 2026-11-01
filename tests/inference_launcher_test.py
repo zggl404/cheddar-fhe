@@ -8,7 +8,7 @@ import tempfile
 
 root = Path(__file__).resolve().parents[1]
 sys.path.insert(0, str(root / 'scripts'))
-from inference_timing import IMAGE_FIELDS, LEAF_FIELDS, KEY_OPS, HYBRID_OPS, summarize, validate_run
+from inference_timing import IMAGE_FIELDS, LEAF_FIELDS, PROFILE_OPS, summarize, validate_run
 
 
 def image(index):
@@ -78,7 +78,7 @@ if sys.argv[sys.argv.index('--time-cpu')+1]=='on':
                  non_keyswitch_ms=r['inference_ms'],profile_operations={k:dict(ns=0,calls=0) for k in OPS})
     open(sys.argv[sys.argv.index('--timing-file')+1],'w').write(json.dumps(report))
 """
-    binary.write_text('#!' + sys.executable + '\n' + worker.replace('REPORT', repr(json.dumps(row))).replace('OPS', repr((*KEY_OPS,*HYBRID_OPS))))
+    binary.write_text('#!' + sys.executable + '\n' + worker.replace('REPORT', repr(json.dumps(row))).replace('OPS', repr(PROFILE_OPS)))
     binary.chmod(0o755)
     command = [sys.executable, str(root/'scripts/run_inference.py'), '--binary', str(binary), '--count', '2', '--warmup', '1', '--log-format', 'json']
     # Inherited variables must not silently turn instrumentation on.
@@ -117,5 +117,15 @@ if len(sys.argv)>1:
         '--count','2','--time-cpu','on','--split-hybrid','on','--log-format','json'],text=True,capture_output=True)
     assert result.returncode==0,result.stderr
     timing=next(json.loads(s[len('CPU_TIMING '):]) for s in result.stdout.splitlines() if s.startswith('CPU_TIMING '))
-    assert timing['Hybrid']==0
+    assert timing['Hybrid']==0  # Shared short-base work is now NonKeyswitch.
+    with tempfile.TemporaryDirectory(prefix='cheddar-shared-policy-') as temporary:
+        path=Path(temporary)/'timing.json'
+        result=subprocess.run([sys.argv[1],'--time-cpu','on','--split-hybrid','on','--timing-file',str(path)],text=True,capture_output=True)
+        assert result.returncode==0,result.stderr
+        raw=json.loads(path.read_text());validate_run(raw)
+        assert raw['hybrid_ns']==0 and raw['profile_operations']['shared_lift_common']['ns']>0
+        raw['profile_operations']['shared_lift']['calls']=1
+        try:validate_run(raw)
+        except ValueError as error:assert 'unsplit hybrid operation' in str(error)
+        else:raise AssertionError('accepted full SharedLift in split CPU report')
 print('INFERENCE_LAUNCHER_TEST_PASS')

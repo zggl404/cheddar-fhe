@@ -14,27 +14,29 @@ namespace cheddar {
 // collected, and disabled scopes never synchronize.
 enum class ProfileOp { Other, ModUp, PseudoModUp, KeyMult, ModDown, Automorphism,
                        SparseToDense, KeyCorrection, FusedBaby, ModDownRescale,
-                       AutomorphismAccum, SharedLift, Count };
+                       AutomorphismAccum, SharedLift, SharedLiftCommon, Count };
 constexpr size_t kProfileOps=static_cast<size_t>(ProfileOp::Count);
 inline constexpr std::array<const char*,kProfileOps> kProfileNames{{
   "other","modup","pseudo_modup","key_mult","moddown","automorphism",
-  "sparse_to_dense","key_correction","fused_baby","moddown_rescale","automorphism_accum","shared_lift"}};
+  "sparse_to_dense","key_correction","fused_baby","moddown_rescale","automorphism_accum","shared_lift","shared_lift_common"}};
 inline constexpr std::array<const char*,kProfileOps> kGpuProfileNames{{
   "cheddar:op:other","cheddar:op:modup","cheddar:op:pseudo_modup","cheddar:op:key_mult",
   "cheddar:op:moddown","cheddar:op:automorphism","cheddar:op:sparse_to_dense",
   "cheddar:op:key_correction","cheddar:op:fused_baby","cheddar:op:moddown_rescale","cheddar:op:automorphism_accum",
-  "cheddar:op:shared_lift"}};
-inline bool IsHybrid(ProfileOp op) { return op>=ProfileOp::FusedBaby&&op<ProfileOp::Count; }
+  "cheddar:op:shared_lift","cheddar:op:shared_lift_common"}};
+inline bool IsHybrid(ProfileOp op) { return op>=ProfileOp::ModDownRescale&&op<=ProfileOp::SharedLift; }
+inline bool IsKeyswitch(ProfileOp op) { return op>ProfileOp::Other&&op<ProfileOp::ModDownRescale; }
+inline bool ForbiddenInSplit(ProfileOp op) { return IsHybrid(op); }
 
 struct OperationTimes {
   bool enabled=false;
   std::array<int64_t,kProfileOps> ns{};
   std::array<uint64_t,kProfileOps> calls{};
   int64_t Keyswitch() const {
-    int64_t n=0;for(size_t i=1;i<static_cast<size_t>(ProfileOp::FusedBaby);++i)n+=ns[i];return n;
+    int64_t n=0;for(size_t i=1;i<kProfileOps;++i)if(IsKeyswitch(static_cast<ProfileOp>(i)))n+=ns[i];return n;
   }
   int64_t Hybrid() const {
-    int64_t n=0;for(size_t i=static_cast<size_t>(ProfileOp::FusedBaby);i<kProfileOps;++i)n+=ns[i];return n;
+    int64_t n=0;for(size_t i=1;i<kProfileOps;++i)if(IsHybrid(static_cast<ProfileOp>(i)))n+=ns[i];return n;
   }
 };
 

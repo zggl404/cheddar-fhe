@@ -114,8 +114,9 @@ NVTX 方式需要 Nsight Systems，GPU 方式需要先启用对应 CMake 功能�
 密钥可通过 `--key-mode save|load --key-dir /data/keys/模型名` 预生成保存并在后续运行加载，
 默认仍为 `generate`，详见[KMS 使用说明](docs/kms.md)。
 
-需要拆开融合操作、只看 Keyswitch 与 Non-keyswitch 时，组合使用
-`--split-hybrid on --ks-profile on`。默认不拆分；拆分会增加运行时间，详见[诊断模式](docs/keyswitch-profiling.md#hybrid-拆分诊断模式)。
+需要拆开跨分类的融合操作时，组合使用
+`--split-hybrid on --time-cpu on`。拆分后共同短基前置归 NonKeyswitch，Hybrid 为零，
+其余步骤按语义归属。默认不拆分；拆分会增加运行时间，详见[诊断模式](docs/keyswitch-profiling.md#hybrid-拆分诊断模式)。
 十个模型的开关、精度、时间和显存验证见[48 GB 实测报告](docs/keyswitch-kms-gpu48.md)。
 
 默认显示参数、FHE Logits 和 Success。开启计时后输出相应方法的报告；

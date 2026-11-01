@@ -23,6 +23,7 @@ int main(int argc,char** argv) {
     timer.Reset();auto begin=InferenceClock::now();timer.Gpu(InferencePhase::Linear,work);auto times=timer.Finish(begin);
     if(!split)for(size_t i=0;i<kProfileOps;++i)covered[i]+=times.operations.calls[i];
     std::cout<<"PROFILE "<<label<<" split="<<split<<" key_ns="<<times.operations.Keyswitch()<<" hybrid_ns="<<times.operations.Hybrid()<<"\n";
+    return times;
   };
   // Exact modular tests cover the dormant fallback's single term, zero
   // rotation, multiple terms, recursion-size batches and aliased extra term.
@@ -34,11 +35,13 @@ int main(int argc,char** argv) {
     for(size_t i=0;i<words.size();++i)words[i]=(uint64_t(i)*13469+37)%primes[i/param->degree_];
     CopyHostToDevice(b.bx_,words);CopyHostToDevice(b.ax_,words);
     for(const auto& rotations:std::vector<std::vector<int>>{{0},{7},{1,7},{0,1,2,3,4,5,6,7,8,9}})for(bool extra:{false,true}) {
-      auto run=[&](bool mode,Ct& out) {measure(mode,"permute_accum",[&]{
+      auto run=[&](bool mode,Ct& out) {return measure(mode,"permute_accum",[&]{
         context->Copy(out,b);auto dst=out.ViewVector();std::vector<std::vector<DvConstView<Word>>> src(rotations.size(),a.ConstViewVector());
         if(extra)src.push_back(out.ConstViewVector());context->elem_handler_.PermuteAccum(dst,np,rotations,src);
       });};
-      run(false,fused);run(true,split);
+      const auto native=run(false,fused);run(true,split);
+      if(rotations==std::vector<int>{0}||(rotations.size()==1&&!extra))
+        Require(native.operations.Hybrid()==0,"pure permutation/add was classified as hybrid");
       for(int component=0;component<2;++component) {
         HostVector<Word> x,y;CopyDeviceToHost(x,component?fused.ax_:fused.bx_);CopyDeviceToHost(y,component?split.ax_:split.bx_);
         for(size_t i=0;i<x.size();++i) {
@@ -62,21 +65,47 @@ int main(int argc,char** argv) {
   measure(false,"multiply",[&]{context->HMult(fused,input,input,client.GetMultiplicationKey(),true);});
   measure(true,"multiply",[&]{context->HMult(split,input,input,client.GetMultiplicationKey(),true);});
   std::vector<Complex> expected(message.size());for(size_t i=0;i<expected.size();++i)expected[i]=message[i]*message[i];check(expected,"multiply");
-  Diagonals diagonals;expected.assign(slots,Complex(.03,0));
-  const std::vector<int> rotations{1,7,130};
-  for(size_t j=0;j<rotations.size();++j){Message diagonal(slots);
-    for(int i=0;i<slots;++i){double weight=.01*(j+1)*(1+.2*std::sin(i*.001));diagonal[i]=weight;expected[i]+=weight*message[(i+rotations[j])%slots];}
-    diagonals.emplace(rotations[j],std::move(diagonal));}
-  PackedLinear linear(context,std::move(diagonals),std::vector<double>(slots,.03),2,128);
-  EvkRequest request;linear.AddRequiredRotations(request);client.PrepareRotationKey(request);
-  measure(false,"linear",[&]{linear.Evaluate(fused,input,client.GetEvkMap());});
-  measure(true,"linear",[&]{linear.Evaluate(split,input,client.GetEvkMap());});check(expected,"linear");
+  for(const auto& rotations:std::vector<std::vector<int>>{{1,7,130},{129,130,258},{0,1,130},{1,7}}) {
+    Diagonals diagonals;expected.assign(slots,Complex(.03,0));
+    for(size_t j=0;j<rotations.size();++j){Message diagonal(slots);
+      for(int i=0;i<slots;++i){double weight=.01*(j+1)*(1+.2*std::sin(i*.001));diagonal[i]=weight;expected[i]+=weight*message[(i+rotations[j])%slots];}
+      diagonals.emplace(rotations[j],std::move(diagonal));}
+    PackedLinear linear(context,std::move(diagonals),std::vector<double>(slots,.03),2,128);
+    EvkRequest request;linear.AddRequiredRotations(request);client.PrepareRotationKey(request);
+    measure(false,"linear",[&]{linear.Evaluate(fused,input,client.GetEvkMap());});
+    const auto diagnostic=measure(true,"linear",[&]{linear.Evaluate(split,input,client.GetEvkMap());});
+    check(expected,"linear");
+    Require(diagnostic.operations.Hybrid()==0,"linear split left mixed work");
+    if(rotations.size()==3) {
+      Require(diagnostic.operations.calls[static_cast<size_t>(ProfileOp::FusedBaby)]>0,"split disabled same-category baby fusion");
+      Require(diagnostic.operations.calls[static_cast<size_t>(ProfileOp::KeyCorrection)]>0,"missing per-rotation ciphertext correction");
+    }
+  }
+  Message complex_message=message;
+  for(int i=0;i<slots;++i)complex_message[i]+=Complex(0,.05*std::cos(i*.017));
+  Ct complex_input;context->encoder_.Encode(pt,2,param->GetScale(2),complex_message);client.Encrypt(complex_input,pt);
+  for(bool conjugate:{false,true})for(bool inplace:{false,true}) {
+    auto work=[&](Ct& out){
+      if(inplace)context->Copy(out,complex_input);
+      const Ct& source=inplace?out:complex_input;
+      if(conjugate)context->HConjAdd(out,source,source,client.GetConjugationKey());
+      else context->HRotAdd(out,source,source,client.GetRotationKey(7),7);
+    };
+    measure(false,"rotation_add",[&]{work(fused);});
+    const auto diagnostic=measure(true,"rotation_add",[&]{work(split);});
+    for(int i=0;i<slots;++i)expected[i]=complex_message[i]+(conjugate?std::conj(complex_message[i]):complex_message[(i+7)%slots]);
+    check(expected,"rotation_add");Require(diagnostic.operations.Hybrid()==0,"rotation/add split left mixed work");
+  }
   context->PrepareEvalMod();context->PrepareEvalSpecialFFT(slots,BootVariant::kImaginaryRemoving);
-  request.clear();context->AddRequiredRotations(request,slots);client.PrepareRotationKey(request);
+  EvkRequest request;context->AddRequiredRotations(request,slots);client.PrepareRotationKey(request);
   measure(false,"boot",[&]{context->Boot(fused,input,client.GetEvkMap());});
-  measure(true,"boot",[&]{context->Boot(split,input,client.GetEvkMap());});check(message,"boot");
+  const auto boot_split=measure(true,"boot",[&]{context->Boot(split,input,client.GetEvkMap());});check(message,"boot");
+  Require(boot_split.operations.calls[static_cast<size_t>(ProfileOp::SharedLiftCommon)]==1,"common short-base transform must run exactly once per Boot");
+  Require(boot_split.operations.ns[static_cast<size_t>(ProfileOp::SharedLiftCommon)]>0,"shared prefix timing disappeared");
+  Require(boot_split.operations.Hybrid()==0,"split Boot left mixed work");
   auto unchanged=decode(input);for(size_t i=0;i<unchanged.size();++i)Require(std::abs(unchanged[i]-message[i])<1e-3,"split modified input");
-  for(size_t i=static_cast<size_t>(ProfileOp::FusedBaby);i<kProfileOps;++i)Require(covered[i]>0,std::string("missing fused coverage: ")+kProfileNames[i]);
+  for(auto op:{ProfileOp::FusedBaby,ProfileOp::ModDownRescale,ProfileOp::AutomorphismAccum,ProfileOp::SharedLift})
+    Require(covered[static_cast<size_t>(op)]>0,std::string("missing fused coverage: ")+kProfileNames[static_cast<size_t>(op)]);
   std::cout<<"HYBRID_SPLIT_TEST_PASS N="<<param->degree_<<"\n";
  }catch(const std::exception& e){std::cerr<<"FAILED "<<e.what()<<"\n";return 1;}
 }

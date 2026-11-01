@@ -9,7 +9,7 @@ from pathlib import Path
 from analyze_gpu_activity import FHE_PHASES, SOURCES, classify
 
 
-def analyze(csv_path, log_path, output, warmup=1):
+def analyze(csv_path, log_path, output, warmup=1, split_hybrid=False):
     audits = [json.loads(line[len('CUDA_EVENT_IMAGE '):]) for line in Path(log_path).read_text().splitlines()
               if line.startswith('CUDA_EVENT_IMAGE ')]
     expected = {r['image']: r for r in audits}
@@ -34,7 +34,7 @@ def analyze(csv_path, log_path, output, warmup=1):
             last[image] = end
             if row['phase'] not in FHE_PHASES:
                 raise ValueError('non-FHE CUDA event segment')
-            category = classify({'op': row['operation'], 'source': row['source']})
+            category = classify({'op': row['operation'], 'source': row['source']}, split_hybrid)
             counts[image] += 1
             total[image] += ms
             by_image[image][category] += ms
@@ -55,7 +55,7 @@ def analyze(csv_path, log_path, output, warmup=1):
         for key, (count, ms) in sorted(breakdown.items()):
             writer.writerow([*key, count, ms, ms/len(measured)])
     mean = {c: sum(by_image[i][c] for i in measured)/len(measured) for c in ('keyswitch', 'hybrid', 'other')}
-    result = dict(method='cuda_event_exclusive_default_stream', measured_images=sorted(measured),
+    result = dict(method='cuda_event_exclusive_default_stream', split_hybrid=split_hybrid, measured_images=sorted(measured),
         warmup_images=images[:warmup], mean_ms={**mean, 'total':sum(mean.values())},
         mean_readback_ms=sum(expected[i]['readback_ms'] for i in measured)/len(measured),
         sources={s: {c:sum(v[1] for k,v in breakdown.items() if k[0]==s and k[3]==c)/len(measured)
@@ -74,6 +74,7 @@ if __name__ == '__main__':
     parser.add_argument('--log', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--warmup', type=int, default=1)
+    parser.add_argument('--split-hybrid', choices=('off','on'), default='off')
     args = parser.parse_args()
-    result = analyze(args.csv, args.log, args.output, args.warmup)
+    result = analyze(args.csv, args.log, args.output, args.warmup, args.split_hybrid=='on')
     print(json.dumps({k:result[k] for k in ('method','mean_ms','mean_readback_ms')}, indent=2))

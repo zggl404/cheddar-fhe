@@ -7,22 +7,22 @@ import gzip
 import json
 from pathlib import Path
 import sqlite3
+from inference_timing import KEY_OPS, HYBRID_OPS, NON_KEY_OPS, SPLIT_FORBIDDEN_OPS
 
 FHE_PHASES = {'linear_ms', 'bootstrap_ms', 'activation_ms', 'graph_ops_ms'}
 SOURCES = ('rotation', 'linear_transform', 'conjugation', 'relinearization',
            'dense_to_sparse', 'sparse_to_dense')
-KEY_OPS = {'modup', 'pseudo_modup', 'key_mult', 'key_correction', 'moddown',
-           'automorphism', 'sparse_to_dense'}
-HYBRID_OPS = {'fused_baby', 'moddown_rescale', 'automorphism_accum', 'shared_lift'}
 
 
-def classify(labels):
+def classify(labels, split_hybrid=False):
     op = labels.get('op', 'other')
+    if split_hybrid and op in SPLIT_FORBIDDEN_OPS:
+        raise ValueError(f'unsplit hybrid operation remains in split execution: {op}')
     if op in KEY_OPS:
         category = 'keyswitch'
     elif op in HYBRID_OPS:
         category = 'hybrid'
-    elif op == 'other':
+    elif op == 'other' or op in NON_KEY_OPS:
         category = 'other'
     else:
         raise ValueError(f'unknown operation: {op}')
@@ -82,7 +82,7 @@ def union_ns(intervals):
     return total
 
 
-def analyze(database, output, warmup=1, log=None):
+def analyze(database, output, warmup=1, log=None, split_hybrid=False):
     output = Path(output)
     output.mkdir(parents=True, exist_ok=True)
     connection = sqlite3.connect(Path(database).resolve().as_uri() + '?mode=ro', uri=True)
@@ -162,7 +162,7 @@ def analyze(database, output, warmup=1, log=None):
                     raise ValueError('Cheddar operation has no image owner')
                 if image < 0:
                     counters['outside_image_records'] += 1
-                category = classify(labels) if image >= 0 else 'outside'
+                category = classify(labels, split_hybrid) if image >= 0 else 'outside'
                 fhe = phase in FHE_PHASES
                 if not fhe:
                     counters['non_fhe_records'] += 1
@@ -224,7 +224,7 @@ def analyze(database, output, warmup=1, log=None):
             if count != counters[f'{kind}_records'] or ns != counters[f'{kind}_total_ns']:
                 raise ValueError('raw SQLite GPU totals disagree with exported records')
     diagnostics = [dict(r) for r in connection.execute('SELECT * FROM DIAGNOSTIC_EVENT')] if 'DIAGNOSTIC_EVENT' in tables else []
-    summary = dict(schema_version=1, method='nsys_gpu_activity_launch_correlation',
+    summary = dict(schema_version=1, method='nsys_gpu_activity_launch_correlation', split_hybrid=split_hybrid,
         warmup_images=images[:warmup], measured_images=sorted(measured), records=dict(counters),
         uncorrelated_records=0, duplicate_records=0, accounting_error_ns=kernel_total-classified_total,
         nvtx_range_audit=range_audit, measured_kernel_launches=launch_count,
@@ -238,7 +238,7 @@ def analyze(database, output, warmup=1, log=None):
                   for category in ('keyswitch', 'hybrid', 'other')} for source in SOURCES},
         diagnostics=diagnostics,
         images=image_rows,
-        policy='ciphertext correction is keyswitch-related; fused_baby, shared_lift, moddown_rescale and automorphism_accum are hybrid; sum of durations is not wall time')
+        policy='fused_baby and ciphertext correction are keyswitch-related; shared_lift_common is non-keyswitch; shared_lift, moddown_rescale and automorphism_accum are hybrid; sum of durations is not wall time')
     (output / 'summary.json').write_text(json.dumps(summary, indent=2)+'\n')
     connection.close()
     return summary
@@ -249,7 +249,8 @@ if __name__ == '__main__':
     parser.add_argument('--sqlite', type=Path, required=True)
     parser.add_argument('--output', type=Path, required=True)
     parser.add_argument('--warmup', type=int, default=1)
+    parser.add_argument('--split-hybrid', choices=('off','on'), default='off')
     parser.add_argument('--log', type=Path, help='Worker log containing program-side NVTX range counts')
     args = parser.parse_args()
-    result = analyze(args.sqlite, args.output, args.warmup, args.log)
+    result = analyze(args.sqlite, args.output, args.warmup, args.log, args.split_hybrid=='on')
     print(json.dumps({key: result[key] for key in ('measured_images', 'mean_ms', 'sources', 'accounting_error_ns')}, indent=2))

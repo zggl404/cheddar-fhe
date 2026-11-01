@@ -51,9 +51,11 @@ are annotated too because AE convolution can call them directly.
 Policy:
 
 - Keyswitch-related kernels include ModUp, PseudoModUp, evaluation-key multiply,
-  necessary ciphertext correction, ModDown, automorphism and sparse-to-dense.
-- Fused baby-step key multiply/correction/permutation, ModDownRescale, shared Boot Q/P lifting and permutation/application accumulation
-  remain Hybrid. Their internal instruction times are not apportioned.
+  necessary ciphertext correction, fused baby-step key multiply/correction/permutation,
+  ModDown, automorphism and sparse-to-dense.
+- ModDownRescale, shared Boot Q/P lifting and permutation/application accumulation
+  remain Hybrid. In split mode the common short-base prefix is NonKeyswitch;
+  Hybrid must be zero and the analyzer rejects unsplit mixed work. Their internal instruction times are not apportioned.
 - Plaintext matrix multiply/accumulation and other FHE work remain Other,
   including when they use the same NTT/PAccum kernel families as key switching.
 - Shared ModUp is counted once at the shared part, never once per rotation.
