@@ -27,9 +27,11 @@ template<class F>void PlaintextReference(InferenceTiming& timing,F function) {
 struct RunOptions {
   std::string format="human", encoding="auto";
   std::string timing_file;
+  std::string event_file="cuda-events.csv";
   std::string key_mode="generate",key_directory;
   bool verbose=false;
   bool ks_profile=false;
+  bool cuda_event_timing=false,nvtx_timing=false;
   bool split_hybrid=false;
   bool Parse(const std::string& key,const std::string& value) {
     if(key=="--log-format") {
@@ -38,9 +40,11 @@ struct RunOptions {
     } else if(key=="--encode-mode") {
       if(value!="auto"&&value!="pre"&&value!="stream")throw std::runtime_error("encode-mode must be auto|pre|stream");
       encoding=value;
-    } else if(key=="--ks-profile") {
-      if(value!="off"&&value!="on")throw std::runtime_error("ks-profile must be off|on");
-      ks_profile=value=="on";
+    } else if(key=="--ks-profile"||key=="--time-cpu"||key=="--time-cuda-event"||key=="--time-nvtx") {
+      if(value!="off"&&value!="on")throw std::runtime_error(key+" must be off|on");
+      if(key=="--time-cuda-event")cuda_event_timing=value=="on";
+      else if(key=="--time-nvtx")nvtx_timing=value=="on";
+      else ks_profile=value=="on";
     } else if(key=="--split-hybrid") {
       if(value!="off"&&value!="on")throw std::runtime_error("split-hybrid must be off|on");
       split_hybrid=value=="on";
@@ -49,6 +53,7 @@ struct RunOptions {
       key_mode=value;
     } else if(key=="--key-dir")key_directory=value;
     else if(key=="--timing-file")timing_file=value;
+    else if(key=="--event-file")event_file=value;
     else if(key=="--verbose") {
       if(value!="0"&&value!="1")throw std::runtime_error("verbose must be 0 or 1");
       verbose=value=="1";
@@ -56,6 +61,20 @@ struct RunOptions {
     return true;
   }
   bool Json() const { return format=="json"; }
+  bool TimingEnabled() const {return ks_profile||cuda_event_timing||nvtx_timing;}
+  void ConfigureTiming() const {
+#ifndef CHEDDAR_CUDA_EVENT_TRACE
+    if(cuda_event_timing)throw std::runtime_error("rebuild with CHEDDAR_CUDA_EVENT_TRACE=ON");
+#endif
+#ifndef CHEDDAR_NVTX_TRACE
+    if(nvtx_timing)throw std::runtime_error("rebuild with CHEDDAR_NVTX_TRACE=ON");
+#endif
+    // Explicit CLI switches override inherited tracing environment variables.
+    if(setenv("CHEDDAR_GPU_TRACE",nvtx_timing?"1":"0",1)||
+       setenv("CHEDDAR_CUDA_EVENT_TRACE",cuda_event_timing?"1":"0",1)||
+       setenv("CHEDDAR_CUDA_EVENT_CSV",event_file.c_str(),1))
+      throw std::runtime_error("cannot configure timing environment");
+  }
 };
 
 // First local in main, so model/context destruction is included in the total.
@@ -67,6 +86,7 @@ class RunReport {
   std::vector<std::pair<int,InferenceTimes>> images;
   bool complete=false;
   void AddImage(int image,const InferenceTimes& times) {
+    if(!options.ks_profile)return;
     inference+=times;images.emplace_back(image,times);
     if(options.Json()) {
       std::cout<<"IMAGE_TIMING {\"image\":"<<image<<",\"plaintext_reference\":"
@@ -74,13 +94,23 @@ class RunReport {
     }
   }
   template<class F> void PrepareBoot(void (*sync)(),F function) {
+    if(!options.ks_profile) {function();return;}
     const auto begin=InferenceClock::now();sync();function();sync();boot_ns+=InferenceNanoseconds(begin);
   }
   ~RunReport() {
-    if(!complete||options.timing_file.empty())return;
+    if(!complete||!options.ks_profile)return;
     try {
       const auto total=InferenceNanoseconds(begin_),model=total-boot_ns-inference.total_ns;
       if(model<0)throw std::runtime_error("overlapping run timing intervals");
+      if(options.timing_file.empty()) {
+        const auto key=inference.operations.Keyswitch(),hybrid=inference.operations.Hybrid();
+        std::cout<<std::setprecision(17)<<"CPU_TIMING {\"scope\":\"fhe_evaluation\",\"total_ms\":"<<InferenceMilliseconds(total)
+          <<",\"model_prepare_ms\":"<<InferenceMilliseconds(model)<<",\"boot_prepare_ms\":"<<InferenceMilliseconds(boot_ns)
+          <<",\"inference_ms\":"<<InferenceMilliseconds(inference.total_ns)<<",\"fhe_eval_ms\":"<<InferenceMilliseconds(inference.Fhe())
+          <<",\"KeyswitchTime\":"<<InferenceMilliseconds(key)<<",\"NonKeyswitchTime\":"<<InferenceMilliseconds(inference.Fhe()-key-hybrid)
+          <<",\"Hybrid\":"<<InferenceMilliseconds(hybrid)<<"}\n";
+        return;
+      }
       std::ofstream out(options.timing_file);
       out<<"{\"plaintext_reference\":"<<(kPlaintextReference?"true":"false")<<",";inference.WriteFields(out);
       out<<",\"model_prepare_ms\":"<<InferenceMilliseconds(model)<<",\"boot_prepare_ms\":"<<InferenceMilliseconds(boot_ns)
@@ -121,10 +151,36 @@ inline void PrintInference(const std::string& model,int image,int label,int pred
   std::cout<<out.str()<<std::flush;
 }
 
+inline void PrintCompactInference(const RunOptions& options,const std::string& model,int image,int label,int prediction,
+                                  const std::vector<double>& logits) {
+  std::cout<<std::setprecision(12);
+  if(options.Json()) {
+    std::cout<<"RESULT {\"model\":\""<<model<<"\",\"image\":"<<image<<",\"label\":"<<label
+      <<",\"prediction\":"<<prediction<<",\"fhe_logits\":[";
+    for(size_t i=0;i<logits.size();++i)std::cout<<(i?",":"")<<logits[i];
+    std::cout<<"],\"status\":\"PASS\",\"success\":true}\n";
+  } else {
+    std::cout<<"Logits image="<<image<<" label="<<label<<" prediction="<<prediction<<": [";
+    for(size_t i=0;i<logits.size();++i)std::cout<<(i?", ":"")<<logits[i];
+    std::cout<<"]\nSuccess: true\n";
+  }
+  std::cout<<std::flush;
+}
+
+inline void PrintRunParameters(const RunOptions& options) {
+  std::cout<<"RUN_PARAM {\"time_cpu\":"<<(options.ks_profile?"true":"false")
+    <<",\"time_cuda_event\":"<<(options.cuda_event_timing?"true":"false")
+    <<",\"time_nvtx\":"<<(options.nvtx_timing?"true":"false")
+    <<",\"split_hybrid\":"<<(options.split_hybrid?"true":"false")
+    <<",\"plaintext_reference\":"<<(kPlaintextReference?"true":"false")
+    <<",\"key_mode\":\""<<options.key_mode<<"\",\"encode_mode\":\""<<options.encoding<<"\"}\n"<<std::flush;
+}
+
 inline bool UsePreencoding(const RunOptions& options,size_t estimated,size_t available) {
   return options.encoding=="pre"||(options.encoding=="auto"&&estimated<=available);
 }
 template<class Client>void PrintKeyResources(const RunOptions& options,const Client& client) {
+  if(!options.TimingEnabled())return;
   if(options.Json())std::cout<<"KEY_RESOURCES {\"mode\":\""<<options.key_mode<<"\",\"identity\":\""<<client.KeyIdentity()
     <<"\",\"key_count\":"<<client.KeyCount()<<",\"keys_generated\":"<<client.KeysGenerated()
     <<",\"keys_loaded\":"<<client.KeysLoaded()<<",\"bytes_loaded\":"<<client.KeyBytesLoaded()
@@ -133,6 +189,7 @@ template<class Client>void PrintKeyResources(const RunOptions& options,const Cli
     <<"\n  Generated / loaded: "<<client.KeysGenerated()<<" / "<<client.KeysLoaded()<<"\n"<<std::flush;
 }
 inline void PrintPreparedMemory(const RunOptions& options,size_t bytes) {
+  if(!options.TimingEnabled())return;
   if(options.Json())std::cout<<"PREPARED_MEMORY {\"resident_gpu_bytes\":"<<bytes<<"}\n"<<std::flush;
   else {
     std::ostringstream out;out<<"  GPU memory after preparation: "<<std::fixed<<std::setprecision(2)
@@ -142,6 +199,7 @@ inline void PrintPreparedMemory(const RunOptions& options,size_t bytes) {
 }
 inline void PrintEncoding(const RunOptions& options,bool pre,size_t estimated,size_t available,
                           size_t model_rotations,size_t boot_rotations) {
+  if(!options.TimingEnabled())return;
   if(options.Json()) {
     std::cout<<"RESOURCES {\"encode_mode\":\""<<(pre?"pre":"stream")
              <<"\",\"estimated_plaintext_bytes\":"<<estimated<<",\"cache_budget_bytes\":"<<available

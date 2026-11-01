@@ -1,14 +1,11 @@
 # ResNet GPU activity timing
 
-The optional NVTX annotations describe the existing execution without adding
-CUDA synchronization or changing fusion. Build with `-DCHEDDAR_NVTX_TRACE=ON`
-and set `CHEDDAR_GPU_TRACE=1` for the annotated process. Both are off by default.
-The current image/layer entry points are implemented in `resnet_cifar`.
-
-Keep `--ks-profile off --split-hybrid off` for this measurement. The existing
-phase synchronization and numerical checks remain identical in baseline and
-traced runs. These results describe this runner, including its interleaved
-reference/checking work; they do not describe an uninterrupted production graph.
+Current switches and category boundaries are documented in [timing modes](timing-modes.md).
+Build with `-DCHEDDAR_NVTX_TRACE=ON`, then pass `--time-nvtx on` to the unified launcher.
+ResNet and CNN both provide image/layer scopes. CPU/Event/NVTX switches default OFF;
+explicit CLI switches override inherited environment variables.
+NVTX adds annotations without synchronization. CPU phase/operation timing synchronizations
+are present only when `--time-cpu on` is also requested; numerical checks remain enabled.
 
 ## Collection
 
@@ -17,15 +14,14 @@ NVTX with CPU sampling/context-switch tracing disabled. For example, after
 building the ResNet example and preparing its model/data:
 
 ```bash
-CHEDDAR_GPU_TRACE=1 nsys profile --trace=cuda,nvtx --sample=none --cpuctxsw=none \
-  --export=sqlite --output=traced \
-  python3 scripts/run_inference.py --model resnet20 --cifar /data/test_batch.bin \
+python3 scripts/run_inference.py --model resnet20 --cifar /data/test_batch.bin \
   --encode-mode pre --key-mode load --key-dir /data/resnet20-keys \
-  --ks-profile off --split-hybrid off --count 11 --warmup 1 --log-format json \
-  > traced.log 2>&1
+  --time-nvtx on --nsys /path/to/nsys --count 11 --warmup 1 --log-format json \
+  --timing-dir /new/path/traced
 
-python3 scripts/analyze_gpu_activity.py --sqlite traced.sqlite \
-  --log traced.log --output activity --warmup 1
+# Optional: replay the independent audit from retained evidence.
+python3 scripts/analyze_gpu_activity.py --sqlite /new/path/traced/nvtx.sqlite \
+  --log /new/path/traced/worker.log --output activity --warmup 1
 ```
 
 Full-process capture keeps profiling boundaries outside the workload. The
@@ -37,7 +33,7 @@ the measured aggregates.
 
 Compare baseline / trace / baseline using the same binary, keys, images and
 configuration; record mean wall times, both baseline runs and tracing overhead.
-Baseline processes use `CHEDDAR_GPU_TRACE=0`. Do not adjust GPU measurements by
+Baseline processes leave all three timing switches OFF; CPU wall timing is a separate instrumented run. Do not adjust GPU measurements by
 subtracting an overhead estimated from a different run.
 
 ## Exclusive attribution
@@ -55,9 +51,8 @@ are annotated too because AE convolution can call them directly.
 Policy:
 
 - Keyswitch-related kernels include ModUp, PseudoModUp, evaluation-key multiply,
-  necessary ciphertext correction, ModDown, automorphism, sparse-to-dense and
-  fused baby-step key multiply/correction/permutation.
-- ModDownRescale, shared Boot Q/P lifting and permutation/application accumulation
+  necessary ciphertext correction, ModDown, automorphism and sparse-to-dense.
+- Fused baby-step key multiply/correction/permutation, ModDownRescale, shared Boot Q/P lifting and permutation/application accumulation
   remain Hybrid. Their internal instruction times are not apportioned.
 - Plaintext matrix multiply/accumulation and other FHE work remain Other,
   including when they use the same NTT/PAccum kernel families as key switching.
@@ -105,9 +100,9 @@ rejection of missing correlation/source information.
 ## CUDA Event comparison
 
 Build with `-DCHEDDAR_CUDA_EVENT_TRACE=ON` to enable a second, independent
-runtime switch. Set `CHEDDAR_CUDA_EVENT_TRACE=1` and
-`CHEDDAR_CUDA_EVENT_CSV=/path/events.csv` for the ResNet runner. Both the build
-option and runtime switch default to off. NVTX can be enabled independently.
+runtime switch. Pass `--time-cuda-event on` to the unified launcher;
+`--timing-dir /new/path` retains the raw Event CSV and audits for either runner.
+Both the build option and runtime switch default to off. NVTX can be enabled independently.
 
 The event collector uses the same phase/source/part/operation scopes. Whenever
 the effective owner changes inside an FHE phase, it records one event in the

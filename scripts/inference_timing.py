@@ -6,7 +6,7 @@ FHE_FIELDS = ('linear_ms', 'bootstrap_ms', 'activation_ms', 'graph_ops_ms')
 LEAF_FIELDS = ('input_ms', 'runtime_weight_prepare_ms', *FHE_FIELDS,
                'reference_ms', 'validation_output_ms', 'dispatch_ms')
 PROFILE_FIELDS = ('keyswitch_ms', 'non_keyswitch_ms', 'hybrid_ms')
-KEY_OPS = ('modup', 'pseudo_modup', 'key_mult', 'moddown', 'automorphism', 'sparse_to_dense')
+KEY_OPS = ('modup', 'pseudo_modup', 'key_mult', 'moddown', 'automorphism', 'sparse_to_dense', 'key_correction')
 HYBRID_OPS = ('fused_baby', 'moddown_rescale', 'automorphism_accum', 'shared_lift')
 IMAGE_FIELDS = ('inference_ms', 'fhe_eval_ms', *LEAF_FIELDS)
 

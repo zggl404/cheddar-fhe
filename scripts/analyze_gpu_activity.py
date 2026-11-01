@@ -12,8 +12,8 @@ FHE_PHASES = {'linear_ms', 'bootstrap_ms', 'activation_ms', 'graph_ops_ms'}
 SOURCES = ('rotation', 'linear_transform', 'conjugation', 'relinearization',
            'dense_to_sparse', 'sparse_to_dense')
 KEY_OPS = {'modup', 'pseudo_modup', 'key_mult', 'key_correction', 'moddown',
-           'automorphism', 'sparse_to_dense', 'fused_baby'}
-HYBRID_OPS = {'moddown_rescale', 'automorphism_accum', 'shared_lift'}
+           'automorphism', 'sparse_to_dense'}
+HYBRID_OPS = {'fused_baby', 'moddown_rescale', 'automorphism_accum', 'shared_lift'}
 
 
 def classify(labels):
@@ -238,7 +238,7 @@ def analyze(database, output, warmup=1, log=None):
                   for category in ('keyswitch', 'hybrid', 'other')} for source in SOURCES},
         diagnostics=diagnostics,
         images=image_rows,
-        policy='fused_baby and necessary ciphertext correction are keyswitch-related; shared_lift, moddown_rescale and automorphism_accum stay hybrid; sum of durations is not wall time')
+        policy='ciphertext correction is keyswitch-related; fused_baby, shared_lift, moddown_rescale and automorphism_accum are hybrid; sum of durations is not wall time')
     (output / 'summary.json').write_text(json.dumps(summary, indent=2)+'\n')
     connection.close()
     return summary

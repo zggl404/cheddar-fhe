@@ -1,12 +1,16 @@
 # Keyswitch 细分计时
 
+当前公开输出和三种独立开关见[三种计时方式](timing-modes.md)。本页的 schema v2 扁平字段
+是 CPU/verbose 内部审计格式，公开 `CPU_TIMING` 三分类以 FHE 求值为父区间。
+
 统一运行入口增加 `--ks-profile off|on`，默认 `off`。例如：
 
 ```bash
 python scripts/run_inference.py --model resnet20 --cifar /data/test_batch.bin --ks-profile on
 ```
 
-开启后，完整 `inference_ms` 按 Keyswitch、Non-keyswitch、Hybrid 三类拆分。
+开启后，公开 `CPU_TIMING` 按 FHE 求值区间报告三分类。
+在 `--verbose 1` 的内部详细报告中，完整 `inference_ms` 另按三类拆分。
 保留原来的阶段细分，两种视角不能再相加；`fhe_eval_ms` 仍表示纯密文图求值所在的阶段。
 JSON 额外提供整数纳秒、各操作独占耗时和调用次数，检查三类之和严格等于 `inference_ns`。
 输入加密、明文参考、解密输出、实时权重编码和未处于切换/混合区间的调度都在 Non-keyswitch。

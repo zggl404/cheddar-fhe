@@ -23,8 +23,11 @@ int main(int argc,char** argv) {
       if(key=="--count")count=std::stoi(value);
       else report.options.Parse(key,value);
     }
+    report.options.ConfigureTiming();
+    PrintRunParameters(report.options);
     report.PrepareBoot(Sync,Work);
     InferenceTiming timer(Sync);
+    timer.SetEnabled(report.options.ks_profile);
     timer.SetProfiling(report.options.ks_profile);timer.SetSplitHybrid(report.options.split_hybrid);
     for(int image=0;image<count;++image) {
       timer.Reset();auto begin=InferenceClock::now();
@@ -36,12 +39,32 @@ int main(int argc,char** argv) {
       });
       timer.Gpu(InferencePhase::Activation,Work);
       PlaintextReference(timer,Work);
+      PrintCompactInference(report.options,"test",image,0,0,std::vector<double>(10,1));
       report.AddImage(image,timer.Finish(begin));
     }
     report.complete=true;return 0;
   }
   RunOptions options;
   assert(!options.Json()&&!options.verbose&&options.encoding=="auto");
+  assert(!options.TimingEnabled());
+  options.ConfigureTiming();
+  assert(std::string(std::getenv("CHEDDAR_GPU_TRACE"))=="0");
+  assert(std::string(std::getenv("CHEDDAR_CUDA_EVENT_TRACE"))=="0");
+  for(const auto* flag:{"--time-cpu","--time-cuda-event","--time-nvtx"}) {
+    assert(options.Parse(flag,"on")&&options.TimingEnabled());
+    assert(options.Parse(flag,"off")&&!options.TimingEnabled());
+    bool bad=false;try {options.Parse(flag,"yes");}catch(const std::runtime_error&){bad=true;}assert(bad);
+  }
+#ifndef CHEDDAR_CUDA_EVENT_TRACE
+  options.Parse("--time-cuda-event","on");
+  bool unavailable=false;try {options.ConfigureTiming();}catch(const std::runtime_error&){unavailable=true;}assert(unavailable);
+  options.Parse("--time-cuda-event","off");
+#endif
+#ifndef CHEDDAR_NVTX_TRACE
+  options.Parse("--time-nvtx","on");
+  bool missing_nvtx=false;try {options.ConfigureTiming();}catch(const std::runtime_error&){missing_nvtx=true;}assert(missing_nvtx);
+  options.Parse("--time-nvtx","off");
+#endif
   assert(!options.Parse("--not-an-option","1"));
   assert(options.Parse("--log-format","json")&&options.Json());
   bool rejected=false;try {options.Parse("--verbose","2");}catch(const std::runtime_error&){rejected=true;}
@@ -103,5 +126,16 @@ int main(int argc,char** argv) {
   const int disabled_before=sync_calls;
   {ProfileScope ignored(ProfileOp::KeyMult);Work();}
   assert(sync_calls==disabled_before&&!profiled.Finish(begin).operations.enabled);
+  // All timing OFF must execute GPU leaves without timing synchronizations.
+  profiled.SetEnabled(false);profiled.SetProfiling(true);profiled.Reset();
+  const auto off_before=sync_calls;
+  profiled.Gpu(InferencePhase::Linear,[]{ProfileScope ignored(ProfileOp::KeyMult);Work();});
+  const auto off=profiled.Finish(InferenceClock::now());
+  assert(sync_calls==off_before&&off.total_ns==0&&off.Classified()==0&&!off.operations.enabled);
+  output.str("");saved=std::cout.rdbuf(output.rdbuf());
+  PrintCompactInference(options,"test",0,3,3,plain);
+  std::cout.rdbuf(saved);
+  assert(output.str().find("\"success\":true")!=std::string::npos);
+  assert(output.str().find("TIMING")==std::string::npos);
   std::cout<<"INFERENCE_RUN_TEST_PASS\n";
 }

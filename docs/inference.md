@@ -70,6 +70,11 @@ CKKS 展开权重大小远大于原始 ONNX；不能由 ONNX 文件大小判断�
 
 ## 统一计时
 
+当前三个计时开关默认全 OFF，只输出参数、Logits 和 Success。
+开启 `--time-cpu on`、`--time-cuda-event on` 或 `--time-nvtx on` 后才输出对应方法。
+统一的三分类及完整命令见[三种计时方式](timing-modes.md)。下述 schema v2 阶段字段
+是 CPU 开启时的内部详细报告；`--verbose 1` 保留旧审计记录。公开三分类以 FHE 求值为父区间。
+
 ### 明文参考开关
 
 `CHEDDAR_PLAINTEXT_REFERENCE` 是 CMake 选项，默认 `ON`，同时控制
@@ -140,7 +145,7 @@ C++ 使用 steady_clock 纳秒计时，累加后转为 ms。GPU 叶区段入口/
 Linux 外层使用进程出生时间，覆盖 Python 启动、子进程动态库加载及退出，
 与外部 time 允许约一个系统 tick、显示舍入及最后打印/退出的微小差额。
 非 Linux 使用 Python main 起点，`boundary` 会明确标注。
-直接调用 C++ 仅输出结果和 JSON IMAGE_TIMING，不发布另一套总时间。
+直接调用 C++ 在 CPU 开启时报告内部进程边界；完整 launcher 端到端使用 Python 入口。
 C++ 的内部计时文件用于外层汇总，不能作为独立进程端到端结果。
 
 预热包含在 count 内，也计入三段总时间。statistics 中所有 mean_ms 使用同一组正式图片，
@@ -149,7 +154,8 @@ C++ 的内部计时文件用于外层汇总，不能作为独立进程端到端�
 
 ## 可选的操作分类与离线密钥
 
-`--ks-profile on` 按相同的完整 `inference_ms` 父区间报告 Keyswitch、Non-keyswitch、Hybrid；
+`--time-cpu on`（旧别名 `--ks-profile on`）的公开三分类以 `fhe_eval_ms` 为父区间；
+旧 schema v2 内部扁平分类仍以 `inference_ms` 为父区间。
 `--split-hybrid on` 切换到诊断执行，配合采集将 Hybrid 拆为两类。二者默认关闭，
 开启采集会同步、拆分会增加执行与临时空间开销，详见[边界和实测](keyswitch-profiling.md)。
 这些分类与原阶段子项是并列视角，不是额外相加的一段时间。

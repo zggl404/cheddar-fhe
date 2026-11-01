@@ -691,7 +691,7 @@ void HoistHandler<word>::EvaluateBabyStep(ConstContextPtr<word> context,
                               num_q_primes * degree, 0)};
         // MAC
         {
-          GpuTraceRange correction("cheddar:op:key_correction");
+          ProfileScope correction(ProfileOp::KeyCorrection);
           context->elem_handler_.Add(tmp_bx_view, input_np, tmp_bx_const_view,
                                      {(*input_bx_pseudo_modup).ConstView()});
         }
@@ -864,7 +864,7 @@ void HoistHandler<word>::EvaluateGiantStep(ConstContextPtr<word> context,
       std::vector<DvView<word>> tmp_bx_view = {tmp.BxView()};
 
       {
-        GpuTraceRange correction("cheddar:op:key_correction");
+        ProfileScope correction(ProfileOp::KeyCorrection);
         context->elem_handler_.Add(tmp_bx_view, q_p_prime_np, {tmp.BxConstView()},
                                    {accum.BxConstView()});
       }

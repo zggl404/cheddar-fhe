@@ -101,7 +101,7 @@ class Runner {
         imaginary=std::max(imaginary,std::abs(actual[i].imag())*o_.range);
       }
       max_error=std::max({max_error,real,imaginary});
-      if(o_.run.verbose&&example::kPlaintextReference)std::cout<<"CHECK name="<<name<<" level="<<context_->param_.NPToLevel(state.ciphertext.GetNP())
+      if(o_.run.TimingEnabled()&&o_.run.verbose&&example::kPlaintextReference)std::cout<<"CHECK name="<<name<<" level="<<context_->param_.NPToLevel(state.ciphertext.GetNP())
                <<" real_error="<<real<<" imaginary_error="<<imaginary<<std::endl;
       Require(real<=1e-2&&imaginary<=1e-2,"CNN numerical gate failed at "+name);
     });
@@ -201,7 +201,7 @@ class Runner {
           const auto& shape=input_state->polynomial;
           output=std::make_shared<State>(Tensor(shape.channels,shape.width,shape.pack),Tensor(1,1));
         }
-        if(o_.run.verbose&&example::kPlaintextReference)timing.Cpu(InferencePhase::ValidationOutput,[&]{std::cout<<"ACTIVATION name="<<node.name<<" max_abs="<<bound<<std::endl;});
+        if(o_.run.TimingEnabled()&&o_.run.verbose&&example::kPlaintextReference)timing.Cpu(InferencePhase::ValidationOutput,[&]{std::cout<<"ACTIVATION name="<<node.name<<" max_abs="<<bound<<std::endl;});
         if(context_)Audit([&]{relu->Evaluate(output->ciphertext,input_state->ciphertext,client_->GetEvkMap(),&timing);});
       } else if(node.operation==Operation::Concat) {
         auto second=states.at(node.inputs[1]);Require(bool(second),"released CNN branch");
@@ -256,7 +256,8 @@ int main(int argc,char** argv) {
   example::RunReport report;
   std::cout<<std::setprecision(12);
   try {
-    auto options=Parse(argc,argv);report.options=options.run;SetDiagnosticLogging(options.run.verbose);
+    auto options=Parse(argc,argv);report.options=options.run;options.run.ConfigureTiming();SetDiagnosticLogging(options.run.verbose&&options.run.TimingEnabled());
+    example::PrintRunParameters(options.run);
     auto model=cnn::LoadModel(options.weights);
     std::unique_ptr<Parameter<Word>> param;std::shared_ptr<Boot> context;std::unique_ptr<UserInterface<Word>> client;
     if(options.mode=="full") {
@@ -291,11 +292,11 @@ int main(int argc,char** argv) {
         <<"\n  Requested encoding: "<<options.run.encoding<<"\n"<<std::flush;
     }
     Runner runner(options,model,context,client.get());
-    runner.timing.SetProfiling(options.run.ks_profile);runner.timing.SetSplitHybrid(options.run.split_hybrid);
+    runner.timing.SetEnabled(options.run.ks_profile);runner.timing.SetProfiling(options.run.ks_profile);runner.timing.SetSplitHybrid(options.run.split_hybrid);
     if(context) {
-      if(!options.run.Json())std::cout<<"Preparing model rotation keys...\n"<<std::flush;
+      if(options.run.TimingEnabled()&&!options.run.Json())std::cout<<"Preparing model rotation keys...\n"<<std::flush;
       runner.PrepareModel();
-      if(!options.run.Json())std::cout<<"Preparing Boot resources...\n"<<std::flush;
+      if(options.run.TimingEnabled()&&!options.run.Json())std::cout<<"Preparing Boot resources...\n"<<std::flush;
       report.PrepareBoot(Sync,[&]{runner.Prepare();});
       client->SaveKeys();example::PrintKeyResources(options.run,*client);
       runner.PrepareWeights();
@@ -303,7 +304,10 @@ int main(int argc,char** argv) {
       example::PrintPreparedMemory(options.run,total-free);
     }
     resnet::Model normalization{};normalization.mean=model.mean;normalization.stdev=model.stdev;
+    GpuEventTiming event_timing;
+    GpuTraceRange trace_run("cheddar:run",false);
     for(int image=options.start;image<options.start+options.count;++image) {
+      GpuTraceImage trace_image(image);event_timing.BeginImage(image);
       runner.timing.Reset();const auto inference_begin=Clock::now();
       {
       int label;Tensor input(3,32);runner.timing.Cpu(InferencePhase::Input,[&]{input=resnet::ReadCifar(options.cifar,image,normalization,label);});
@@ -331,7 +335,9 @@ int main(int argc,char** argv) {
         }
       }
       size_t free_bytes=0,total_bytes=0;if(context)Require(cudaMemGetInfo(&free_bytes,&total_bytes)==cudaSuccess,"memory query failed");
-      if(options.run.Json()) {
+      if(!options.run.TimingEnabled()) {
+        example::PrintCompactInference(options.run,model.family,image,label,prediction,fhe_logits);
+      } else if(options.run.Json()) {
       std::cout<<"RESULT {\"status\":\"PASS\",\"family\":\""<<model.family<<"\",\"mode\":\""<<options.mode
                <<"\",\"image\":"<<image<<",\"label\":"<<label<<",\"prediction\":"<<prediction
                <<",\"plaintext_reference\":"<<(example::kPlaintextReference?"true":"false");
@@ -359,9 +365,12 @@ int main(int argc,char** argv) {
       else runner.timing.Cpu(InferencePhase::ValidationOutput,result_output);
       }
       report.AddImage(image,runner.timing.Finish(inference_begin));
+      event_timing.FinishImage();
+      if(GpuTraceEnabled())std::cout<<"GPU_TRACE_AUDIT {\"image\":"<<image
+        <<",\"ranges\":"<<trace_image.RangeCount()<<"}\n"<<std::flush;
     }
     if(context){auto stats=Encoder<Word>::GetEncodingStats();Require(stats.cpu_attempts==0,"CNN CPU encoding attempted");
-      if(options.run.Json()||options.run.verbose)std::cout<<"GPU_ONLY_PASS vectors="<<stats.gpu_vectors<<" constants="<<stats.gpu_constants<<" cpu_attempts="<<stats.cpu_attempts<<std::endl;}
+      if(options.run.TimingEnabled()&&(options.run.Json()||options.run.verbose))std::cout<<"GPU_ONLY_PASS vectors="<<stats.gpu_vectors<<" constants="<<stats.gpu_constants<<" cpu_attempts="<<stats.cpu_attempts<<std::endl;}
     report.complete=true;
   }catch(const std::exception& e){std::cerr<<"FAILED "<<e.what()<<std::endl;return 1;}
 }

@@ -9,6 +9,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1] / 'scripts'))
 from analyze_gpu_activity import analyze, classify, union_ns
 
 assert union_ns([(1, 5), (3, 7), (10, 12)]) == 8
+assert classify({'op':'fused_baby','source':'linear_transform'}) == 'hybrid'
+assert classify({'op':'key_correction','source':'rotation'}) == 'keyswitch'
 for labels in ({'op': 'unknown'}, {'op': 'modup'}):
     try:
         classify(labels)

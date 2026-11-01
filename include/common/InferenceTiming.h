@@ -34,6 +34,8 @@ struct InferenceTimes {
     for(auto v:phases)if(v<0)throw std::runtime_error("negative inference timing interval");
     if(operations.Keyswitch()<0||operations.Hybrid()<0||operations.Keyswitch()+operations.Hybrid()>total_ns)
       throw std::runtime_error("overlapping operation timing intervals");
+    if(operations.enabled&&operations.Keyswitch()+operations.Hybrid()>Fhe())
+      throw std::runtime_error("operation profile exceeds FHE evaluation boundary");
     if(split_hybrid&&operations.enabled)for(size_t i=static_cast<size_t>(ProfileOp::FusedBaby);i<kProfileOps;++i)
       if(operations.calls[i]||operations.ns[i])throw std::runtime_error("hybrid operation remains in split execution");
   }
@@ -75,31 +77,34 @@ struct InferenceTimes {
 class InferenceTiming {
  public:
   explicit InferenceTiming(void (*synchronize)()=nullptr):synchronize_(synchronize){}
+  void SetEnabled(bool enabled) {enabled_=enabled;}
   void SetProfiling(bool enabled) {profile_enabled_=enabled;}
   void SetSplitHybrid(bool enabled) {split_hybrid_=enabled;}
-  void Reset() { if(active_)throw std::runtime_error("reset during inference interval");times_={};profile_.Start(profile_enabled_,synchronize_); }
+  void Reset() { if(active_)throw std::runtime_error("reset during inference interval");times_={};profile_.Start(enabled_&&profile_enabled_,synchronize_); }
   template<class F> void Cpu(InferencePhase phase,F function) { Record(phase,false,function); }
   template<class F> void Gpu(InferencePhase phase,F function) { Record(phase,true,function); }
   InferenceTimes Finish(InferenceClock::time_point begin) {
     if(active_)throw std::runtime_error("unfinished inference interval");
     auto result=times_;result.operations=profile_.Finish();result.split_hybrid=split_hybrid_;
-    result.total_ns=InferenceNanoseconds(begin);result.Validate();return result;
+    if(enabled_)result.total_ns=InferenceNanoseconds(begin);result.Validate();return result;
   }
  private:
   InferenceTimes times_;
   void (*synchronize_)();
   bool active_=false;
+  bool enabled_=true;
   bool profile_enabled_=false;
   bool split_hybrid_=false;
   OperationProfile profile_;
   template<class F> void Record(InferencePhase phase,bool gpu,F function) {
     const auto index=static_cast<size_t>(phase);
     if(active_||index>=kInferencePhases)throw std::runtime_error("nested or invalid inference interval");
+    GpuTraceRange trace("phase", kInferenceFields[index]);
+    if(!enabled_) {function();return;}
     if(gpu&&!synchronize_)throw std::runtime_error("GPU timing requires a synchronization callback");
     active_=true;
     // The entry drain is charged to this interval as well; no wait disappears.
     const auto begin=InferenceClock::now();
-    GpuTraceRange trace("phase", kInferenceFields[index]);
     try { if(gpu)synchronize_();function();if(gpu)synchronize_(); }
     catch(...) {active_=false;profile_.Abort();throw;}
     times_.phases[index]+=InferenceNanoseconds(begin);active_=false;

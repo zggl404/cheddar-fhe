@@ -45,7 +45,7 @@ def main():
         temporary.replace(args.output / 'report.json')
 
     def run(name, options, expected_images=0):
-        command = [sys.executable,str(root/'scripts/run_inference.py'),'--binary',str(args.binary), '--log-format', 'json', '--verbose', '1', '--encode-mode', args.encode_mode, *map(str, options)]
+        command = [sys.executable,str(root/'scripts/run_inference.py'),'--binary',str(args.binary), '--log-format', 'json', '--verbose', '1', '--time-cpu', 'on', '--encode-mode', args.encode_mode, *map(str, options)]
         cell = dict(name=name, command=command, log=f'{name}.log', images=[], image_timings=[])
         report['cells'].append(cell)
         parameters = None

@@ -100,15 +100,16 @@ python scripts/run_inference.py --model vgg11 --cifar "$CIFAR_BIN" --weights /da
 重复采样仍使用同一入口。例如共运行 6 张，图 0 预热，后 5 张计算统计：
 
 ```bash
-python scripts/run_inference.py --model vgg11 --cifar "$CIFAR_BIN" --count 6 --warmup 1
+python scripts/run_inference.py --model vgg11 --cifar "$CIFAR_BIN" --count 6 --warmup 1 --time-cpu on
 ```
 
 ## 4. 看结果和时间
 
-需要区分 Keyswitch、Non-keyswitch 和 Hybrid 时间时，加 `--ks-profile on`。
-默认关闭，开启会增加同步测量开销，边界与示例见[计时说明](docs/keyswitch-profiling.md)。
-
-需要保留融合路径、按实际 GPU kernel 分类时，见[NVTX / Nsight GPU 活动计时](docs/gpu-activity.md)。
+默认三个计时开关全部关闭，只输出参数、Logits 和 Success。
+按需独立添加 `--time-cpu on`、`--time-cuda-event on`、`--time-nvtx on`；
+每种都报告 KeyswitchTime、NonKeyswitchTime、Hybrid，只有 CPU 方式额外报告端到端/准备/推理墙钟。
+NVTX 方式需要 Nsight Systems，GPU 方式需要先启用对应 CMake 功能。
+实现、边界和命令见[三种计时方式](docs/timing-modes.md)。
 
 密钥可通过 `--key-mode save|load --key-dir /data/keys/模型名` 预生成保存并在后续运行加载，
 默认仍为 `generate`，详见[KMS 使用说明](docs/kms.md)。
@@ -117,8 +118,8 @@ python scripts/run_inference.py --model vgg11 --cifar "$CIFAR_BIN" --count 6 --w
 `--split-hybrid on --ks-profile on`。默认不拆分；拆分会增加运行时间，详见[诊断模式](docs/keyswitch-profiling.md#hybrid-拆分诊断模式)。
 十个模型的开关、精度、时间和显存验证见[48 GB 实测报告](docs/keyswitch-kms-gpu48.md)。
 
-默认分行显示参数、资源模式、每个类别的精确 ReLU 明文输出、FHE 解密输出，
-以及最大/平均绝对误差。逐层诊断默认收起，数值校验仍然执行；失败会返回非零状态。
+默认显示参数、FHE Logits 和 Success。开启计时后输出相应方法的报告；
+开启计时并加 `--verbose 1` 可查看详细诊断。数值校验仍然执行，失败返回非零状态。
 
 明文参考可通过 CMake 关闭，适用于 ResNet 和 CNN 入口，默认 `ON`：
 
@@ -132,7 +133,7 @@ cmake --build build --parallel 12 --target resnet_cifar cnn_cifar
 参考对比及基于明文的激活范围检查不执行；需要正确性验证时改为 `ON` 并重新编译。
 详细边界见[明文参考开关](docs/inference.md#明文参考开关)。
 
-计时只有一套口径，所有模型一致：
+CPU 墙钟计时的阶段边界在所有模型中一致：
 
 ```text
 端到端 = 模型资源准备及进程开销 + Boot资源准备 + 推理阶段
@@ -145,12 +146,13 @@ cmake --build build --parallel 12 --target resnet_cifar cnn_cifar
 
 预编码计入模型准备；实时编码计入推理阶段。Boot 准备与 Boot 执行分开统计。
 三段总计覆盖所有图片，包括预热；每图均值只统计同一组正式图片。
-所有时间为同步墙钟，单位 ms，包含相应区段的主机开销。
+上述 CPU 时间为同步墙钟，单位 ms，包含相应区段的主机开销。Event/NVTX 的三分类仅覆盖 FHE，
+分别报告 stream elapsed / kernel duration sum，不能当作端到端墙钟。
 
 核对端到端耗时：
 
 ```bash
-time -p python scripts/run_inference.py --model resnet20 --cifar "$CIFAR_BIN"
+time -p python scripts/run_inference.py --model resnet20 --cifar "$CIFAR_BIN" --time-cpu on
 ```
 
 合计除以 1000 后与 `real` 对照，允许系统时钟粒度和最后打印/退出的小额差异。

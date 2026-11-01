@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
-"""Run one CIFAR-10 FHE model with unified, additive wall-clock timing."""
+"""Run CIFAR-10 inference with independently switched CPU, CUDA Event and NVTX timing."""
 import argparse
 import json
 import os
 from pathlib import Path
+import shutil
 import subprocess
 import sys
 import tempfile
 import time
 
-from inference_timing import print_human, summarize, validate_run, validate_totals
+from inference_timing import summarize, validate_run, validate_totals
 
 ROOT = Path(__file__).resolve().parents[1]
 MODELS = ('resnet20', 'resnet32', 'resnet44', 'resnet56', 'resnet110',
@@ -17,7 +18,6 @@ MODELS = ('resnet20', 'resnet32', 'resnet44', 'resnet56', 'resnet110',
 
 
 def process_wall(fallback_start):
-    # Linux process birth includes Python startup; resolution is one clock tick.
     try:
         fields = Path('/proc/self/stat').read_text().rsplit(')', 1)[1].split()
         born = int(fields[19]) / os.sysconf('SC_CLK_TCK')
@@ -26,6 +26,27 @@ def process_wall(fallback_start):
     except (OSError, ValueError, AttributeError, IndexError):
         return ((time.perf_counter() - fallback_start) * 1000,
                 'Python main through child teardown; interpreter startup excluded')
+
+
+def category_report(method, scope, key, non, hybrid, warmup, measured):
+    values = (key, non, hybrid)
+    if any(not 0 <= value < float('inf') for value in values):
+        raise ValueError('invalid timing category')
+    return dict(method=method, scope=scope, unit='ms', warmup_count=warmup,
+                measured_count=measured, KeyswitchTime=key, NonKeyswitchTime=non,
+                Hybrid=hybrid, total=sum(values))
+
+
+def print_timing(name, row, json_output):
+    if json_output:
+        print(name + '_TIMING ' + json.dumps(row, separators=(',', ':')))
+    else:
+        print(f'\n{name} timing (ms, {row["scope"]}; mean of {row["measured_count"]} images)')
+        if name == 'CPU':
+            for key in ('end_to_end_ms', 'prepare_ms', 'model_prepare_ms', 'boot_prepare_ms', 'inference_ms'):
+                print(f'  {key:24}: {row[key]:.3f}')
+        for key in ('KeyswitchTime', 'NonKeyswitchTime', 'Hybrid', 'total'):
+            print(f'  {key:24}: {row[key]:.3f}')
 
 
 def main():
@@ -38,14 +59,21 @@ def main():
     parser.add_argument('--weights', type=Path, help='default: models/MODEL.bin')
     parser.add_argument('--cifar', type=Path)
     parser.add_argument('--count', type=int, default=1)
-    parser.add_argument('--warmup', type=int, default=0, help='included in count and end-to-end time')
+    parser.add_argument('--warmup', type=int, default=0, help='included in count and CPU end-to-end time')
     parser.add_argument('--encode-mode', choices=('auto', 'pre', 'stream'), default='auto')
     parser.add_argument('--key-mode', choices=('generate', 'save', 'load'), default='generate')
     parser.add_argument('--key-dir', type=Path)
     parser.add_argument('--split-hybrid', choices=('off', 'on'), default='off')
-    parser.add_argument('--ks-profile', choices=('off', 'on'), default='off')
+    parser.add_argument('--time-cpu', '--ks-profile', dest='time_cpu', choices=('off', 'on'), default='off',
+                        help='synchronized CPU wall timing; --ks-profile is a compatibility alias')
+    parser.add_argument('--time-cuda-event', choices=('off', 'on'), default='off')
+    parser.add_argument('--time-nvtx', choices=('off', 'on'), default='off')
+    parser.add_argument('--nsys', default='nsys', help='Nsight Systems executable for --time-nvtx on')
+    parser.add_argument('--timing-dir', type=Path, help='retain raw timing evidence in a new directory')
     parser.add_argument('--log-format', choices=('human', 'json'), default='human')
     args, options = parser.parse_known_args()
+    verbose = any(options[i:i+2] == ['--verbose', '1'] for i in range(len(options)))
+    cpu, events, nvtx = args.time_cpu == 'on', args.time_cuda_event == 'on', args.time_nvtx == 'on'
     if args.key_mode != 'generate' and not args.key_dir:
         parser.error('--key-mode save/load requires --key-dir')
     if args.key_dir:
@@ -53,49 +81,106 @@ def main():
     options += ['--key-mode', args.key_mode]
     if not 0 <= args.warmup < args.count <= 10000:
         parser.error('require 0 <= warmup < count <= 10000')
-    if any(x.split('=', 1)[0] in ('--timing-file',) for x in options):
-        parser.error('timing-file is managed by this launcher')
+    if any(x.split('=', 1)[0] in ('--timing-file', '--event-file') for x in options):
+        parser.error('timing-file and event-file are managed by this launcher')
     if args.model and not args.cifar:
         parser.error('--model requires --cifar')
     binary = args.binary or args.build_dir / 'example' / ('resnet_cifar' if args.model.startswith('resnet') else 'cnn_cifar')
     binary = binary.expanduser().resolve()
-    weights = args.weights or (ROOT / 'models' / f'{args.model}.bin' if args.model else None)
     if not binary.is_file() or not os.access(binary, os.X_OK):
         parser.error(f'missing executable: {binary}; build both examples first')
+    weights = args.weights or (ROOT / 'models' / f'{args.model}.bin' if args.model else None)
     if weights:
         options += ['--weights', str(weights.expanduser().resolve())]
     if args.cifar:
         options += ['--cifar', str(args.cifar.expanduser().resolve())]
     if args.model and '--relu-range' not in options:
         options += ['--relu-range', {'resnet56': '12', 'resnet110': '24'}.get(args.model, '10')]
-    options += ['--count', str(args.count), '--encode-mode', args.encode_mode, '--log-format', args.log_format, '--ks-profile', args.ks_profile, '--split-hybrid', args.split_hybrid]
-    env = dict(os.environ)
+    options += ['--count', str(args.count), '--encode-mode', args.encode_mode, '--log-format', args.log_format,
+                '--time-cpu', args.time_cpu, '--time-cuda-event', args.time_cuda_event,
+                '--time-nvtx', args.time_nvtx, '--split-hybrid', args.split_hybrid]
+    nsys = shutil.which(args.nsys) if nvtx else None
+    if nvtx and not nsys:
+        parser.error('--time-nvtx on requires Nsight Systems; supply --nsys /path/to/nsys')
+    env = dict(os.environ, CHEDDAR_GPU_TRACE='1' if nvtx else '0',
+               CHEDDAR_CUDA_EVENT_TRACE='1' if events else '0')
     env['LD_LIBRARY_PATH'] = str(binary.parents[1]) + ':' + env.get('LD_LIBRARY_PATH', '')
     try:
+        # The OFF path launches the worker directly: no timing report or profiler.
+        if not (cpu or events or nvtx):
+            code = subprocess.call([str(binary), *options], env=env)
+            return code if code >= 0 else 128-code
         with tempfile.TemporaryDirectory(prefix='cheddar-timing-') as temporary:
-            path = Path(temporary) / 'timing.json'
-            code = subprocess.call([str(binary), *options, '--timing-file', str(path)], env=env)
-            if code:
-                return code if code > 0 else 128 - code
-            row = json.loads(path.read_text())
-            validate_run(row)
-        if all(image['image'] >= 0 for image in row['images']) and len(row['images']) != args.count:
-            raise ValueError('unexpected image timing count')
-        if args.warmup and any(image['image'] < 0 for image in row['images']):
-            raise ValueError('warmup is only supported for per-image runs')
-        row['image_count'] = len(row['images'])
-        row['statistics'] = summarize(row['images'], args.warmup)
-        row['command'] = [str(binary), *options]
-        row.pop('images')  # Release per-image reports before the final timestamp in both formats.
-        # Include report parsing, validation and statistics before taking the
-        # final timestamp. Only the fixed-size final summary remains outside.
-        row['total_ms'], row['boundary'] = process_wall(start)
-        row['model_prepare_ms'] = row['total_ms'] - row['boot_prepare_ms'] - row['inference_ms']
-        validate_totals(row)
-        if args.log_format == 'json':
-            print('TIMING ' + json.dumps(row, separators=(',', ':')))
-        else:
-            print_human(row)
+            folder = args.timing_dir.expanduser().resolve() if args.timing_dir else Path(temporary)
+            if args.timing_dir:
+                folder.mkdir(parents=True, exist_ok=False)
+            path, csv, log = folder/'cpu.json', folder/'events.csv', folder/'worker.log'
+            command = [str(binary), *options]
+            if cpu:
+                command += ['--timing-file', str(path)]
+            if events:
+                command += ['--event-file', str(csv)]
+            if nvtx:
+                command = [nsys, 'profile', '--trace=cuda,nvtx', '--sample=none', '--cpuctxsw=none',
+                           '--force-overwrite=true', '--export=sqlite', '--output='+str(folder/'nvtx'), *command]
+            (folder/'command.json').write_text(json.dumps(dict(command=command), indent=2)+'\n')
+            result = subprocess.run(command, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+            log.write_text(result.stdout)
+            (folder/'profiler-stderr.log').write_text(result.stderr)
+            if result.returncode:
+                print(result.stdout, end='')
+                print(result.stderr, end='', file=sys.stderr)
+                return result.returncode if result.returncode > 0 else 128-result.returncode
+            # Hide internal audits and nsys progress; retain both in the raw log.
+            for line in result.stdout.splitlines():
+                if line.startswith(('IMAGE_TIMING ', 'CUDA_EVENT_IMAGE ', 'GPU_TRACE_AUDIT ')) and not verbose:
+                    continue
+                if nvtx and line.startswith(('Generating ', 'Processing ', 'Generated:', 'Report files:', '[', '    /')):
+                    continue
+                print(line)
+            reports = {}
+            if cpu:
+                row = json.loads(path.read_text())
+                validate_run(row)
+                if all(image['image'] >= 0 for image in row['images']) and len(row['images']) != args.count:
+                    raise ValueError('unexpected image timing count')
+                if args.warmup and any(image['image'] < 0 for image in row['images']):
+                    raise ValueError('warmup is only supported for per-image runs')
+                stats = summarize(row['images'], args.warmup)
+                row['total_ms'], row['boundary'] = process_wall(start)
+                row['model_prepare_ms'] = row['total_ms']-row['boot_prepare_ms']-row['inference_ms']
+                validate_totals(row)
+                mean = stats['mean_ms']
+                key, hybrid = mean.get('keyswitch_ms', 0), mean.get('hybrid_ms', 0)
+                reports['CPU'] = category_report('synchronized_cpu_wall', 'fhe_evaluation',
+                    key, mean['fhe_eval_ms']-key-hybrid,
+                    hybrid, args.warmup, stats['measured_count'])
+                reports['CPU'].update(end_to_end_ms=row['total_ms'],
+                    prepare_ms=row['model_prepare_ms']+row['boot_prepare_ms'],
+                    model_prepare_ms=row['model_prepare_ms'], boot_prepare_ms=row['boot_prepare_ms'],
+                    inference_ms=row['inference_ms'], inference_mean_ms=mean['inference_ms'], boundary=row['boundary'])
+                if verbose:
+                    legacy = dict(row, statistics=stats, image_count=len(row['images']), command=command)
+                    legacy.pop('images')
+                    print('TIMING ' + json.dumps(legacy, separators=(',', ':')))
+            if events:
+                from analyze_cuda_events import analyze
+                analysis = analyze(csv, log, folder/'event-analysis', args.warmup)
+                mean = analysis['mean_ms']
+                reports['CUDA_EVENT'] = category_report('cuda_event_exclusive_default_stream',
+                    'fhe_default_stream_elapsed', mean['keyswitch'], mean['other'], mean['hybrid'],
+                    args.warmup, len(analysis['measured_images']))
+            if nvtx:
+                from analyze_gpu_activity import analyze
+                analysis = analyze(folder/'nvtx.sqlite', folder/'nvtx-analysis', args.warmup, log)
+                mean = analysis['mean_ms']
+                reports['NVTX'] = category_report('nsys_gpu_activity_launch_correlation',
+                    'fhe_kernel_duration_sum', mean.get('kernel_keyswitch', 0), mean.get('kernel_other', 0),
+                    mean.get('kernel_hybrid', 0), args.warmup, len(analysis['measured_images']))
+            for name, report in reports.items():
+                report['enabled_methods'] = dict(cpu=cpu, cuda_event=events, nvtx=nvtx)
+                print_timing(name, report, args.log_format == 'json')
+            (folder/'summary.json').write_text(json.dumps(reports, indent=2)+'\n')
     except (OSError, ValueError, KeyError, TypeError) as error:
         print(f'FAILED timing: {error}', file=sys.stderr)
         return 1

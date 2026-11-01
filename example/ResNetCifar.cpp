@@ -223,7 +223,7 @@ class Runner {
         imaginary=std::max(imaginary,std::abs(values[i].imag())*range_);
       }
       max_error=std::max(max_error,std::max(error,imaginary));
-      if(run_.verbose&&example::kPlaintextReference)std::cout<<"CHECK name="<<name<<" slots="<<values.size()
+      if(run_.TimingEnabled()&&run_.verbose&&example::kPlaintextReference)std::cout<<"CHECK name="<<name<<" slots="<<values.size()
                <<" level="<<context_->param_.NPToLevel(ciphertext.GetNP())
                <<" log_scale="<<std::log2(ciphertext.GetScale())<<" max_abs_error="<<error
                <<" max_imag="<<imaginary<<" polynomial_vs_relu="<<approximation<<std::endl;
@@ -237,7 +237,7 @@ class Runner {
     PackedLinear* operation=Cached(prefix);
     if(!operation) {timing.Gpu(InferencePhase::WeightPrepare,[&]{op=MakeConv(context_,shape,w,b,stride,bs_,range_);});operation=op.get();}
     EvkRequest request; operation->AddRequiredRotations(request); PrepareKeys(request);
-    if(run_.verbose)timing.Cpu(InferencePhase::ValidationOutput,[&]{std::cout<<"PREPARE name="<<prefix<<" diagonals="<<operation->NumDiagonals()<<std::endl;});
+    if(run_.TimingEnabled()&&run_.verbose)timing.Cpu(InferencePhase::ValidationOutput,[&]{std::cout<<"PREPARE name="<<prefix<<" diagonals="<<operation->NumDiagonals()<<std::endl;});
     Evaluate(InferencePhase::Linear,[&]{operation->Evaluate(ciphertext,ciphertext,client_.GetEvkMap());});
     shape=Tensor(w.shape[0],shape.width/stride,shape.pack*stride);
     example::PlaintextReference(timing,[&]{reference=Conv(reference,w,b,stride);exact=Conv(exact,w,b,stride);});
@@ -307,7 +307,7 @@ class Runner {
       }
     }
     for(int i=1;i<10;++i) if(out[i].real()>out[prediction].real()) prediction=i;
-    if(run_.verbose) {
+    if(run_.TimingEnabled()&&run_.verbose) {
       std::cout<<"LOGITS [";
       for(int i=0;i<10;++i)std::cout<<(i?",":"")<<out[i].real()*range_;
       std::cout<<"]"<<std::endl;
@@ -347,7 +347,7 @@ void EncodeProbe(std::shared_ptr<Boot> context, UserInterface<Word>& client,Infe
 }
 void Reference(const Options& options,const Model& model,example::RunReport& report) {
   for(int image=options.start;image<options.start+options.count;++image) {
-    InferenceTiming timing;const auto begin=Clock::now();
+    InferenceTiming timing;timing.SetEnabled(options.run.ks_profile);const auto begin=Clock::now();
     {
     int label;Tensor input(3,32);timing.Cpu(InferencePhase::Input,[&]{input=ReadCifar(options.cifar,image,model,label);});
     Tensor poly(1,1),exact(1,1);
@@ -391,7 +391,9 @@ int main(int argc,char** argv) {
   std::cout<<std::setprecision(12);
   try {
     const auto options=Parse(argc,argv);report.options=options.run;
-    SetDiagnosticLogging(options.run.verbose);
+    options.run.ConfigureTiming();
+    SetDiagnosticLogging(options.run.verbose&&options.run.TimingEnabled());
+    example::PrintRunParameters(options.run);
     Model model{};
     if(!options.weights.empty()) model=LoadModel(options.weights);
     if(options.mode=="reference") {
@@ -419,10 +421,10 @@ int main(int argc,char** argv) {
       <<"\n  Start / count: "<<options.start<<" / "<<options.count<<"\n  Mode / baby step: "<<options.mode<<" / "<<options.baby_step
       <<"\n  Requested encoding: "<<options.run.encoding<<"\n"<<std::flush;
     Runner runner(context,*client,&model,options.baby_step,options.relu_range,options.run);
-    runner.timing.SetProfiling(options.run.ks_profile);runner.timing.SetSplitHybrid(options.run.split_hybrid);
-    if(!options.weights.empty()) {if(!options.run.Json())std::cout<<"Preparing model rotation keys...\n"<<std::flush;runner.PrepareModel();}
+    runner.timing.SetEnabled(options.run.ks_profile);runner.timing.SetProfiling(options.run.ks_profile);runner.timing.SetSplitHybrid(options.run.split_hybrid);
+    if(!options.weights.empty()) {if(options.run.TimingEnabled()&&!options.run.Json())std::cout<<"Preparing model rotation keys...\n"<<std::flush;runner.PrepareModel();}
     if(options.mode!="conv" && options.mode!="encode") {
-      if(!options.run.Json())std::cout<<"Preparing Boot resources...\n"<<std::flush;
+      if(options.run.TimingEnabled()&&!options.run.Json())std::cout<<"Preparing Boot resources...\n"<<std::flush;
       report.PrepareBoot(Sync,[&]{runner.PrepareBoot();});
     }
     client->SaveKeys();example::PrintKeyResources(options.run,*client);
@@ -490,7 +492,9 @@ int main(int argc,char** argv) {
       runner.timing.Cpu(InferencePhase::ValidationOutput,[&]{
       auto stats=Encoder<Word>::GetEncodingStats();
       size_t free=0,total=0;cudaMemGetInfo(&free,&total);
-      if(options.run.Json()) {
+      if(!options.run.TimingEnabled()) {
+        example::PrintCompactInference(options.run,"ResNet"+std::to_string(model.depth),image,label,prediction,runner.logits);
+      } else if(options.run.Json()) {
       std::cout<<"RESULT {\"status\":\"PASS\",\"mode\":\""<<options.mode<<"\",\"depth\":"<<model.depth
         <<",\"image\":"<<image<<",\"label\":"<<label<<",\"prediction\":"<<prediction
         <<",\"relu_range\":"<<options.relu_range
@@ -536,7 +540,7 @@ int main(int argc,char** argv) {
       report.AddImage(-1,runner.timing.Finish(probe_begin));
     auto stats=Encoder<Word>::GetEncodingStats();
     Require(stats.cpu_attempts==0 && stats.gpu_vectors>0,"GPU-only encoding audit failed");
-    if(options.run.Json()||options.run.verbose)std::cout<<"GPU_ONLY_PASS vectors="<<stats.gpu_vectors<<" constants="<<stats.gpu_constants
+    if(options.run.TimingEnabled()&&(options.run.Json()||options.run.verbose))std::cout<<"GPU_ONLY_PASS vectors="<<stats.gpu_vectors<<" constants="<<stats.gpu_constants
              <<" cpu_attempts="<<stats.cpu_attempts<<" fhe_encode_calls="<<runner.fhe_encode_calls<<std::endl;
     report.complete=true;
     return 0;

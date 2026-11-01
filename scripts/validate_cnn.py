@@ -39,7 +39,7 @@ def main():
         golden=json.loads((args.reference_dir/f'float-{family}.json').read_text())
         if golden['source_sha256']!=manifest['source_sha256'] or golden['cifar_sha256']!=report['cifar_sha256']:
             raise RuntimeError('independent reference source/data hash mismatch')
-        command=[sys.executable,str(root/'scripts/run_inference.py'),'--binary',str(args.binary),'--log-format','json','--verbose','1','--encode-mode',args.encode_mode,'--weights',str(model),'--cifar',str(args.cifar),'--stop-after',str(stop),
+        command=[sys.executable,str(root/'scripts/run_inference.py'),'--binary',str(args.binary),'--log-format','json','--verbose','1','--time-cpu','on','--encode-mode',args.encode_mode,'--weights',str(model),'--cifar',str(args.cifar),'--stop-after',str(stop),
                  '--count',str(count),'--relu-range',str(args.relu_range)]
         cell=dict(name=name,command=command,model_sha256=sha(model),log=f'{name}.log',images=[],image_timings=[])
         report['cells'].append(cell);save();parameters=None;gpu_only=False

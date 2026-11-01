@@ -703,7 +703,7 @@ void Context<word>::MultKeyNoModDown(Ct &accum, const Ct &a,
     std::vector<std::vector<DvConstView<word>>> src_const_views;
     src_const_views.push_back(a.ConstViewVector(0, true));
     src_const_views.push_back(accum.ConstViewVector());
-    GpuTraceRange correction("cheddar:op:key_correction");
+    ProfileScope correction(ProfileOp::KeyCorrection);
     elem_handler_.CAccum(caccum_res, a_np, src_const_views, {p_prod});
   } else {
     mod_switcher.ModUp(mod_up_result_view, a.AxConstView());
@@ -715,7 +715,7 @@ void Context<word>::MultKeyNoModDown(Ct &accum, const Ct &a,
     src_const_views.push_back(std::vector<DvConstView<word>>{a.BxConstView()});
     src_const_views.push_back(
         std::vector<DvConstView<word>>{accum.BxConstView()});
-    GpuTraceRange correction("cheddar:op:key_correction");
+    ProfileScope correction(ProfileOp::KeyCorrection);
     elem_handler_.CAccum(caccum_res, a_np, src_const_views, {p_prod});
   }
 }
