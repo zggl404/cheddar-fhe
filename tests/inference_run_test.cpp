@@ -28,8 +28,10 @@ int main(int argc,char** argv) {
     report.PrepareBoot(Sync,Work);
     InferenceTiming timer(Sync);
     timer.SetEnabled(report.options.ks_profile);
+    timer.SetWallOnly(report.options.CoarseTiming());
     timer.SetProfiling(report.options.ks_profile);timer.SetSplitHybrid(report.options.split_hybrid);
     for(int image=0;image<count;++image) {
+      if(report.options.CoarseTiming())Sync();
       timer.Reset();auto begin=InferenceClock::now();
       timer.Cpu(InferencePhase::Input,Work);
       timer.Gpu(InferencePhase::Bootstrap,[&]{
@@ -40,8 +42,10 @@ int main(int argc,char** argv) {
       timer.Gpu(InferencePhase::Activation,Work);
       PlaintextReference(timer,Work);
       PrintCompactInference(report.options,"test",image,0,0,std::vector<double>(10,1));
+      if(report.options.CoarseTiming())Sync();
       report.AddImage(image,timer.Finish(begin));
     }
+    if(report.options.CoarseTiming())assert(sync_calls==2+2*count);
     report.complete=true;return 0;
   }
   RunOptions options;
@@ -145,6 +149,10 @@ int main(int argc,char** argv) {
   profiled.Gpu(InferencePhase::Linear,[]{ProfileScope ignored(ProfileOp::KeyMult);Work();});
   const auto off=profiled.Finish(InferenceClock::now());
   assert(sync_calls==off_before&&off.total_ns==0&&off.Classified()==0&&!off.operations.enabled);
+  profiled.SetWallOnly(true);profiled.Reset();begin=InferenceClock::now();
+  profiled.Gpu(InferencePhase::Linear,[]{ProfileScope ignored(ProfileOp::KeyMult);Work();});
+  const auto coarse=profiled.Finish(begin);
+  assert(sync_calls==off_before&&coarse.total_ns>0&&coarse.Classified()==0&&!coarse.operations.enabled);
   output.str("");saved=std::cout.rdbuf(output.rdbuf());
   PrintCompactInference(options,"test",0,3,3,plain);
   std::cout.rdbuf(saved);

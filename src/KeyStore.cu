@@ -108,6 +108,7 @@ template<class word>void UserInterface<word>::InitializeKeyStore() {
     kms::Check(!kms::fs::exists(key_directory_),"save directory already exists: "+key_directory_);
     key_identity_=kms::Identity();return;
   }
+  const auto load_begin=time_key_load_?std::chrono::steady_clock::now():std::chrono::steady_clock::time_point{};
   std::ifstream manifest(kms::fs::path(key_directory_)/"manifest.txt");
   kms::Check(bool(manifest),"missing manifest in "+key_directory_);
   std::string line;std::getline(manifest,line);kms::Check(line=="CHEDDAR_KEYS_V1","invalid manifest version");
@@ -135,9 +136,11 @@ template<class word>void UserInterface<word>::InitializeKeyStore() {
     sparse_secret_.resize(secret_size);
     key_bytes_loaded_+=kms::Transfer<word>(kms::KeyPath(key_directory_,-1),key_identity_,-1,{&sparse_secret_},false);
   }
+  if(time_key_load_)key_load_ns_+=std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now()-load_begin).count();
 }
 
 template<class word>void UserInterface<word>::LoadEvaluationKey(int id,const NPInfo& required) {
+  const auto load_begin=time_key_load_?std::chrono::steady_clock::now():std::chrono::steady_clock::time_point{};
   const auto found=stored_keys_.find(id);
   kms::Check(found!=stored_keys_.end(),"required key is missing: "+std::to_string(id));
   kms::Check(required.IsSubsetOf(found->second.first),"insufficient level coverage for key "+std::to_string(id));
@@ -146,6 +149,7 @@ template<class word>void UserInterface<word>::LoadEvaluationKey(int id,const NPI
   for(int i=0;i<key.GetBeta();++i){vectors.push_back(&key.bx_[i]);vectors.push_back(&key.ax_[i]);}
   key_bytes_loaded_+=kms::Transfer<word>(kms::KeyPath(key_directory_,id),key_identity_,id,vectors,false);
   evk_map_.insert_or_assign(id,std::move(key));++keys_loaded_;
+  if(time_key_load_)key_load_ns_+=std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::steady_clock::now()-load_begin).count();
 }
 
 template<class word>void UserInterface<word>::SaveKeys() {

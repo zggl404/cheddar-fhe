@@ -4,39 +4,44 @@
 你只需准备受支持的 CIFAR-10 ONNX 模型，以及 `test_batch.bin`。
 流程是：**编译 → 逐个导出权重 → 运行模型**。
 
-## 1. 准备环境并编译
+## 1. 在已有 Docker 环境中编译
 
-密文推理需要 Linux、NVIDIA GPU 和 CUDA 开发工具包。下面以 Ubuntu、
-Python 3.10/3.11、CUDA 12.8、Blackwell GPU 为例；其他 GPU 的配置见[详细文档](docs/inference.md)。
+以下假设容器中的 CUDA、编译器和依赖已准备好，在仓库根目录执行。
+非 Docker 环境的依赖安装放在本文末尾。
 
 ```bash
-git clone --branch feature/keyswitch-profile-kms https://github.com/zggl404/cheddar-fhe.git
-cd cheddar-fhe
-
-# root 用户可以去掉 sudo。
-sudo apt-get update
-sudo apt-get install -y build-essential git libtommath-dev libspdlog-dev python3-venv
-
-python3 -m venv ../cheddar-env
-source ../cheddar-env/bin/activate
-python -m pip install numpy==1.24.4 onnx==1.14.1 cmake==3.29.6
-
-export PATH="/usr/local/cuda/bin:$PATH"
-nvcc --version
-nvidia-smi
-
-git clone --depth 1 --branch branch-22.12 https://github.com/rapidsai/rmm.git ../cheddar-rmm
 cmake -S . -B build \
   -DCMAKE_BUILD_TYPE=Release \
-  -DCMAKE_CUDA_ARCHITECTURES=120 \
-  -DCHEDDAR_RMM_INCLUDE_DIR="$(cd ../cheddar-rmm/include && pwd)" \
+  -DCMAKE_CUDA_ARCHITECTURES=native \
   -DBUILD_UNITTEST=OFF \
   -DBUILD_RESNET_EXAMPLE=ON \
-  -DBUILD_CNN_EXAMPLE=ON
-cmake --build build --parallel 12
+  -DBUILD_CNN_EXAMPLE=ON \
+  -DCHEDDAR_NVTX_TRACE=ON \
+  -DCHEDDAR_CUDA_EVENT_TRACE=OFF \
+  -DCHEDDAR_PLAINTEXT_REFERENCE=OFF
+cmake --build build --parallel 12 --target resnet_cifar cnn_cifar
 ```
 
-重新登录后，在仓库根目录重新激活 `../cheddar-env`。更新 C++ 源码后需要重新编译。
+`native` 针对容器可见的 GPU 编译；也可以指定实际架构。更新 C++ 源码或 CMake 选项后重新编译。
+容器已有 RMM 22.12 头文件时，追加 `-DCHEDDAR_RMM_INCLUDE_DIR=/实际路径/include`，避免重复下载。
+
+| CMake 选项 | 默认 | 作用 |
+|---|---|---|
+| `BUILD_RESNET_EXAMPLE` | `OFF` | 编译 ResNet 推理入口及对应检查程序 |
+| `BUILD_CNN_EXAMPLE` | `OFF` | 编译 VGG/MobileNet/SqueezeNet/AlexNet 入口及对应检查程序 |
+| `CHEDDAR_NVTX_TRACE` | `OFF` | 编译 NVTX 标记支持；运行时仍需打开采集，另外需要 `nsys` |
+| `CHEDDAR_CUDA_EVENT_TRACE` | `OFF` | 编译 CUDA Event 计时支持；运行时仍默认关闭 |
+| `CHEDDAR_PLAINTEXT_REFERENCE` | `ON` | 计算同多项式和精确 ReLU 明文参考、执行数值对照；性能测量可设为 `OFF` |
+| `CHEDDAR_RMM_INCLUDE_DIR` | 空 | 指定已有 RMM 22.12 include；留空时通过 FetchContent 下载 |
+| `ENABLE_EXTENSION` | `ON` | 编译 Boot、神经网络等扩展，两个推理入口需要它 |
+| `BUILD_UNITTEST` | `ON` | 编译 `unittest/` 下的单元测试；示例目录还有自己的检查 target |
+| `USE_GMP` | `OFF` | 大整数后端由 libtommath 切换为 GMP，需要相应开发库 |
+| `CMAKE_BUILD_TYPE` | `Release` | 构建类型；基准测试使用 Release |
+| `CMAKE_CUDA_ARCHITECTURES` | `60;61;70;75;80;86;89;90` | 编译目标 GPU 架构，建议按实际设备覆盖 |
+| `CMAKE_CUDA_COMPILER` | 自动查找 | CUDA 编译器路径，必要时设 `/usr/local/cuda/bin/nvcc` |
+
+顶层还声明了 `BUILD_TESTS`，但本项目自身测试 target 由 `BUILD_UNITTEST` 和示例开关控制，
+不要把它当成统一测试开关。CUDA Toolkit 最低查找要求为 11.8，实际编译器还须支持目标 GPU。
 
 ## 2. 逐个导出权重
 
@@ -165,3 +170,84 @@ FHE 对精确 ReLU 的误差包含激活多项式近似；逐层 `1e-2` 校验�
 底层参数、显存策略、分阶段验证和独立参考见[详细文档](docs/inference.md)。
 十个真实模型的全预编码时间、显存和输出误差见[96 GB GPU 实测报告](docs/gpu96-benchmark.md)。
 `models/`、`build/`、`validation/` 不提交到 GitHub。许可证见 [LICENSE](LICENSE)。
+
+## 5. 自动统计全部模型的 NVTX 时间
+
+准备好上面十个模型的 `.bin` 权重、CIFAR 文件、GNU `time` 和 Nsight Systems CLI。
+脚本默认逐个处理全部十个模型，每个模型运行两次：无 NVTX/Event 的粗粒度墙钟基线，
+以及独立的 NVTX 采集。两次都关闭逐操作 CPU 同步计时。
+
+```bash
+python scripts/benchmark_nvtx.py \
+  --build-dir build --models-dir models --cifar "$CIFAR_BIN" \
+  --output validation/nvtx-all --count 6 --warmup 1
+```
+
+`--output` 必须是新目录。`nsys` 不在 PATH 时添加 `--nsys /实际路径/nsys`。
+使用 `--models resnet20 vgg11` 可先检查少数模型；`--encode-mode auto|pre|stream` 控制编码方式。
+默认 `auto`，采集运行固定采用基线实际选中的编码模式，确保配对一致。
+
+密钥流程：添加 `--key-root /data/keys` 可复用 `/data/keys/模型名`。
+没有相应包时，脚本先在自己创建的私有临时目录生成、保存并执行一次验证推理，
+随后两次测量都使用 `load`；该模型结束或失败后清理临时密钥。
+原本存在的密钥包不会删除。预生成阶段不计入这两次端到端；文件缓存可能已被预热，结果不代表冷盘读取。
+默认临时密钥位于输出目录下，磁盘须能容纳一个模型的包，无需同时保存十套密钥。
+
+输出 `summary.csv`、`summary.json` 和每模型的命令、日志、墙钟报告、Nsight SQLite 与分类明细。
+单个模型失败会记录错误并继续后续模型，最终有失败则返回非零。
+
+| 报告字段 | 口径 |
+|---|---|
+| `baseline_end_to_end_ms` / `profiled_end_to_end_ms` | C++ main 起点到模型/上下文释放完成，覆盖全部图片 |
+| `*_time_real_ms` | `/usr/bin/time -p` 的完整模型进程 real，含加载/退出；采集时不含 nsys 导出与后处理 |
+| `*_time_user_ms` / `*_time_sys_ms` | GNU time 的 CPU user/sys；不是 GPU 耗时 |
+| `*_key_load_ms` | 全部 secrets/evaluation keys 的 manifest 校验、文件读取、checksum、GPU 分配及上传，汇总模型准备与 Boot 准备两个阶段 |
+| `*_weight_preencode_ms` | 网络权重构建和预编码；stream 为 0，其运行期编码包含在 Inference |
+| `*_inference_total_ms` | 全部图片的输入开始至校验/输出及末尾同步完成，含预热 |
+| `*_inference_mean_ms` | 排除 warmup 后的单图 Inference 均值 |
+| `*_other_prepare_and_teardown_ms` | 端到端扣除 key load、预编码、全部 Inference 的其余部分 |
+| `nvtx_keyswitch_ms` | 同一组正式图片的 Keyswitch kernel duration 均值 |
+| `non_keyswitch_residual_ms` | **profiled Inference 均值 − 同次采集的 NVTX Keyswitch 均值** |
+| `nvtx_other_kernel_ms` / `nvtx_hybrid_ms` | 另外保留纯 GPU Other 与 Hybrid，避免把剩余墙钟解释为纯 GPU NonKeyswitch |
+
+这套相减口径适合观察“整次推理中，除已识别 Keyswitch kernel 之外的剩余时间”。
+剩余时间包含主机提交/等待、设备空闲、输入、明文参考（若开启）、解密校验、运行期编码及尚未拆开的 Hybrid。
+它和纯 GPU Other 有不同含义，也不能用基线 Inference 减去另一次 NVTX 的 Keyswitch。
+默认保留融合路径；要采用拆分诊断路径可加 `--split-hybrid on`，此时 Hybrid 必须为零。
+当前相减限定为无 kernel 重叠的执行，脚本发现重叠会拒绝发布这个差值。
+
+两次各自满足：
+
+```text
+C++端到端 = key load + 权重预编码 + 全部Inference + 其余准备/收尾
+```
+
+key load 和预编码本来就是 Prepare 的子项，不要再与完整 Prepare 重复相加。
+粗粒度 `wall.json` 标记 `timing_detail=coarse`，原有叶阶段字段未采集，不能把其中的 0 解释为没有对应工作。
+`wrapper_wall_ms` 另存于 JSON，包含采集工具启动/导出；批处理总耗时还包含密钥预生成和分析。
+
+## 6. 环境准备（非 Docker 或容器缺少依赖时）
+
+密文推理需要 Linux、NVIDIA GPU 和 CUDA 开发工具包。下面以 Ubuntu、
+Python 3.10/3.11、CUDA 12.8、Blackwell GPU 为例；其他 GPU 的配置见[详细文档](docs/inference.md)。
+
+```bash
+git clone --branch feature/keyswitch-profile-kms https://github.com/zggl404/cheddar-fhe.git
+cd cheddar-fhe
+
+# root 用户可以去掉 sudo。
+sudo apt-get update
+sudo apt-get install -y build-essential git libtommath-dev libspdlog-dev python3-venv time wget ca-certificates
+
+python3 -m venv ../cheddar-env
+source ../cheddar-env/bin/activate
+python -m pip install numpy==1.24.4 onnx==1.14.1 cmake==3.29.6
+
+export PATH="/usr/local/cuda/bin:$PATH"
+nvcc --version
+nvidia-smi
+
+git clone --depth 1 --branch branch-22.12 https://github.com/rapidsai/rmm.git ../cheddar-rmm
+```
+
+然后使用第 1 节的 CMake 命令编译；重新登录后激活 `../cheddar-env`。

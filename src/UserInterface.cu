@@ -111,8 +111,8 @@ __global__ void AddEvkPart(word *dst, const word *primes,
 
 template <typename word>
 UserInterface<word>::UserInterface(ContextPtr<word> context,bool defer_boot_keys,
-                                  std::string key_mode,std::string key_directory)
-    : context_{std::move(context)},key_mode_(std::move(key_mode)),key_directory_(std::move(key_directory)) {
+                                  std::string key_mode,std::string key_directory,bool time_key_load)
+    : context_{std::move(context)},key_mode_(std::move(key_mode)),key_directory_(std::move(key_directory)),time_key_load_(time_key_load) {
   const auto &param = context_->param_;
   all_primes_ =
       param.GetPrimeVector(param.LevelToNP(param.max_level_, param.alpha_));

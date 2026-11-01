@@ -42,9 +42,10 @@ class UserInterface {
    * @param defer_boot_keys Prepare dense/sparse switch keys later with PrepareBootKeys().
    * @param key_mode generate, save, or load (load never generates new secrets/keys).
    * @param key_directory Complete key bundle directory for save/load.
+   * @param time_key_load Measure manifest/secret/evaluation-key loading wall time.
    */
   explicit UserInterface(ContextPtr<word> context,bool defer_boot_keys=false,
-                         std::string key_mode="generate",std::string key_directory="");
+                         std::string key_mode="generate",std::string key_directory="",bool time_key_load=false);
 
   /**
    * @brief Encrypt a plaintext into a ciphertext.
@@ -103,6 +104,7 @@ class UserInterface {
   uint64_t KeysLoaded() const {return keys_loaded_;}
   uint64_t KeyBytesLoaded() const {return key_bytes_loaded_;}
   uint64_t KeyBytesSaved() const {return key_bytes_saved_;}
+  int64_t KeyLoadNanoseconds() const {return key_load_ns_;}
   size_t KeyCount() const {return evk_map_.size();}
   const std::string& KeyIdentity() const {return key_identity_;}
 
@@ -122,6 +124,8 @@ class UserInterface {
   std::map<int,std::pair<NPInfo,int>> stored_keys_;
   bool stored_boot_keys_=false;
   uint64_t keys_generated_=0,keys_loaded_=0,key_bytes_loaded_=0,key_bytes_saved_=0;
+  bool time_key_load_=false;
+  int64_t key_load_ns_=0;
   std::string KeyParameters() const;
   void InitializeKeyStore();
   void LoadEvaluationKey(int id,const NPInfo& required);

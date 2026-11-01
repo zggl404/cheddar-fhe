@@ -62,6 +62,8 @@ struct RunOptions {
   }
   bool Json() const { return format=="json"; }
   bool TimingEnabled() const {return ks_profile||cuda_event_timing||nvtx_timing;}
+  bool WallTiming() const {return ks_profile||!timing_file.empty();}
+  bool CoarseTiming() const {return !ks_profile&&!timing_file.empty();}
   void ConfigureTiming() const {
 #ifndef CHEDDAR_CUDA_EVENT_TRACE
     if(cuda_event_timing)throw std::runtime_error("rebuild with CHEDDAR_CUDA_EVENT_TRACE=ON");
@@ -82,23 +84,37 @@ class RunReport {
  public:
   RunOptions options;
   int64_t boot_ns=0;
+  int64_t key_load_ns=0,preencode_ns=0;
+  uint64_t key_count=0,keys_generated=0,keys_loaded=0;
+  std::string key_identity,encoding="none";
   InferenceTimes inference;
   std::vector<std::pair<int,InferenceTimes>> images;
   bool complete=false;
   void AddImage(int image,const InferenceTimes& times) {
-    if(!options.ks_profile)return;
+    if(!options.WallTiming())return;
     inference+=times;images.emplace_back(image,times);
-    if(options.Json()) {
+    if(options.Json()&&options.ks_profile) {
       std::cout<<"IMAGE_TIMING {\"image\":"<<image<<",\"plaintext_reference\":"
         <<(kPlaintextReference?"true":"false")<<",";times.WriteFields(std::cout);std::cout<<"}\n"<<std::flush;
     }
   }
   template<class F> void PrepareBoot(void (*sync)(),F function) {
-    if(!options.ks_profile) {function();return;}
+    if(!options.WallTiming()) {function();return;}
     const auto begin=InferenceClock::now();sync();function();sync();boot_ns+=InferenceNanoseconds(begin);
   }
+  template<class F> void PrepareWeights(void (*sync)(),F function,bool& preencoded) {
+    if(!options.WallTiming()) {function();return;}
+    sync();const auto begin=InferenceClock::now();function();
+    if(preencoded) {sync();preencode_ns+=InferenceNanoseconds(begin);}
+    encoding=preencoded?"pre":"stream";
+  }
+  template<class Client>void RecordKeys(const Client& client) {
+    if(!options.WallTiming())return;
+    key_load_ns=client.KeyLoadNanoseconds();key_count=client.KeyCount();
+    keys_generated=client.KeysGenerated();keys_loaded=client.KeysLoaded();key_identity=client.KeyIdentity();
+  }
   ~RunReport() {
-    if(!complete||!options.ks_profile)return;
+    if(!complete||!options.WallTiming())return;
     try {
       const auto total=InferenceNanoseconds(begin_),model=total-boot_ns-inference.total_ns;
       if(model<0)throw std::runtime_error("overlapping run timing intervals");
@@ -114,7 +130,11 @@ class RunReport {
       std::ofstream out(options.timing_file);
       out<<"{\"plaintext_reference\":"<<(kPlaintextReference?"true":"false")<<",";inference.WriteFields(out);
       out<<",\"model_prepare_ms\":"<<InferenceMilliseconds(model)<<",\"boot_prepare_ms\":"<<InferenceMilliseconds(boot_ns)
-         <<",\"total_ms\":"<<InferenceMilliseconds(total)<<",\"images\":[";
+         <<",\"total_ms\":"<<InferenceMilliseconds(total)
+         <<",\"timing_detail\":\""<<(options.CoarseTiming()?"coarse":"synchronized_scopes")<<"\""
+         <<",\"key_load_ms\":"<<InferenceMilliseconds(key_load_ns)<<",\"weight_preencode_ms\":"<<InferenceMilliseconds(preencode_ns)
+         <<",\"key_mode\":\""<<options.key_mode<<"\",\"encode_mode\":\""<<encoding<<"\",\"key_identity\":\""<<key_identity
+         <<"\",\"key_count\":"<<key_count<<",\"keys_generated\":"<<keys_generated<<",\"keys_loaded\":"<<keys_loaded<<",\"images\":[";
       for(size_t i=0;i<images.size();++i) {
         if(i)out<<",";
         out<<"{\"image\":"<<images[i].first<<",\"plaintext_reference\":"

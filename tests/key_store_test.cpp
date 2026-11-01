@@ -40,9 +40,10 @@ int main(int argc,char** argv) {
   auto context=BootContext<Word>::Create(*param,resolved.boot);Encoder<Word>::SetGpuOnlyEncoding(true);
   Client generated(context,true,"save",path.string());
   generated.PrepareRotationKey(7,2);generated.PrepareRotationKey(16,8);generated.PrepareBootKeys();generated.SaveKeys();
-  Client loaded(context,true,"load",path.string());
+  Client loaded(context,true,"load",path.string(),true);
   loaded.PrepareRotationKey(7,2);loaded.PrepareRotationKey(16,8);loaded.PrepareBootKeys();
   Require(loaded.KeysGenerated()==0&&loaded.KeysLoaded()==generated.KeyCount(),"load generated keys or missed keys");
+  Require(loaded.KeyLoadNanoseconds()>0&&generated.KeyLoadNanoseconds()==0,"invalid key loading time");
   Require(loaded.KeyIdentity()==generated.KeyIdentity(),"key identity changed");
   for(const auto& entry:generated.GetEvkMap()) {
     const auto& a=entry.second;const auto& b=loaded.GetEvkMap().at(entry.first);

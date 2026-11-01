@@ -267,7 +267,7 @@ int main(int argc,char** argv) {
       config.first_modulus_bits=options.scale_bits==40?50:56;config.auxiliary_modulus_bits=options.scale_bits==40?341:403;
       config.num_stc_levels=options.scale_bits==40?4:3;
       Synchronized([&]{auto resolved=ResolveBootConfig<Word>(config);param=NewParametersFromLiteral(resolved.parameters);param->split_hybrid_=options.run.split_hybrid;
-        context=Boot::Create(*param,resolved.boot);MultiLevelCiphertext<Word>::StaticInit(*param,context->encoder_);client=std::make_unique<UserInterface<Word>>(context,true,options.run.key_mode,options.run.key_directory);});
+        context=Boot::Create(*param,resolved.boot);MultiLevelCiphertext<Word>::StaticInit(*param,context->encoder_);client=std::make_unique<UserInterface<Word>>(context,true,options.run.key_mode,options.run.key_directory,options.run.WallTiming());});
       if(options.run.Json()) {
       std::cout<<"PARAM {\"ring_dimension\":"<<param->degree_<<",\"slots\":"<<options.slots
                <<",\"word_bits\":32,\"normal_scale_bits\":"<<options.scale_bits
@@ -292,22 +292,24 @@ int main(int argc,char** argv) {
         <<"\n  Requested encoding: "<<options.run.encoding<<"\n"<<std::flush;
     }
     Runner runner(options,model,context,client.get());
-    runner.timing.SetEnabled(options.run.ks_profile);runner.timing.SetProfiling(options.run.ks_profile);runner.timing.SetSplitHybrid(options.run.split_hybrid);
+    runner.timing.SetEnabled(options.run.ks_profile);runner.timing.SetWallOnly(options.run.CoarseTiming());runner.timing.SetProfiling(options.run.ks_profile);runner.timing.SetSplitHybrid(options.run.split_hybrid);
     if(context) {
       if(options.run.TimingEnabled()&&!options.run.Json())std::cout<<"Preparing model rotation keys...\n"<<std::flush;
       runner.PrepareModel();
       if(options.run.TimingEnabled()&&!options.run.Json())std::cout<<"Preparing Boot resources...\n"<<std::flush;
       report.PrepareBoot(Sync,[&]{runner.Prepare();});
       client->SaveKeys();example::PrintKeyResources(options.run,*client);
-      runner.PrepareWeights();
+      report.PrepareWeights(Sync,[&]{runner.PrepareWeights();},runner.preencoded);
       size_t free=0,total=0;Require(cudaMemGetInfo(&free,&total)==cudaSuccess,"prepared memory query failed");
       example::PrintPreparedMemory(options.run,total-free);
     }
+    if(client)report.RecordKeys(*client);
     resnet::Model normalization{};normalization.mean=model.mean;normalization.stdev=model.stdev;
     GpuEventTiming event_timing;
     GpuTraceRange trace_run("cheddar:run",false);
     for(int image=options.start;image<options.start+options.count;++image) {
       GpuTraceImage trace_image(image);event_timing.BeginImage(image);
+      if(options.run.CoarseTiming()&&context)Sync();
       runner.timing.Reset();const auto inference_begin=Clock::now();
       {
       int label;Tensor input(3,32);runner.timing.Cpu(InferencePhase::Input,[&]{input=resnet::ReadCifar(options.cifar,image,normalization,label);});
@@ -364,6 +366,7 @@ int main(int argc,char** argv) {
       if(context)runner.timing.Gpu(InferencePhase::ValidationOutput,result_output);
       else runner.timing.Cpu(InferencePhase::ValidationOutput,result_output);
       }
+      if(options.run.CoarseTiming()&&context)Sync();
       report.AddImage(image,runner.timing.Finish(inference_begin));
       event_timing.FinishImage();
       if(GpuTraceEnabled())std::cout<<"GPU_TRACE_AUDIT {\"image\":"<<image

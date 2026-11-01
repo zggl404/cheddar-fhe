@@ -347,7 +347,7 @@ void EncodeProbe(std::shared_ptr<Boot> context, UserInterface<Word>& client,Infe
 }
 void Reference(const Options& options,const Model& model,example::RunReport& report) {
   for(int image=options.start;image<options.start+options.count;++image) {
-    InferenceTiming timing;timing.SetEnabled(options.run.ks_profile);const auto begin=Clock::now();
+    InferenceTiming timing;timing.SetEnabled(options.run.ks_profile);timing.SetWallOnly(options.run.CoarseTiming());const auto begin=Clock::now();
     {
     int label;Tensor input(3,32);timing.Cpu(InferencePhase::Input,[&]{input=ReadCifar(options.cifar,image,model,label);});
     Tensor poly(1,1),exact(1,1);
@@ -412,7 +412,7 @@ int main(int argc,char** argv) {
       param=NewParametersFromLiteral(resolved.parameters);param->split_hybrid_=options.run.split_hybrid;
       context=Boot::Create(*param,resolved.boot);
       MultiLevelCiphertext<Word>::StaticInit(*param,context->encoder_);
-      client=std::make_unique<UserInterface<Word>>(context,true,options.run.key_mode,options.run.key_directory);
+      client=std::make_unique<UserInterface<Word>>(context,true,options.run.key_mode,options.run.key_directory,options.run.WallTiming());
     });
     if(options.run.Json())PrintParameters(config,*param,context->boot_param_);
     else std::cout<<"Parameters\n  Model: ResNet"<<model.depth<<"\n  Ring dimension: "<<param->degree_<<"\n  Slots: "<<kSlots
@@ -421,7 +421,7 @@ int main(int argc,char** argv) {
       <<"\n  Start / count: "<<options.start<<" / "<<options.count<<"\n  Mode / baby step: "<<options.mode<<" / "<<options.baby_step
       <<"\n  Requested encoding: "<<options.run.encoding<<"\n"<<std::flush;
     Runner runner(context,*client,&model,options.baby_step,options.relu_range,options.run);
-    runner.timing.SetEnabled(options.run.ks_profile);runner.timing.SetProfiling(options.run.ks_profile);runner.timing.SetSplitHybrid(options.run.split_hybrid);
+    runner.timing.SetEnabled(options.run.ks_profile);runner.timing.SetWallOnly(options.run.CoarseTiming());runner.timing.SetProfiling(options.run.ks_profile);runner.timing.SetSplitHybrid(options.run.split_hybrid);
     if(!options.weights.empty()) {if(options.run.TimingEnabled()&&!options.run.Json())std::cout<<"Preparing model rotation keys...\n"<<std::flush;runner.PrepareModel();}
     if(options.mode!="conv" && options.mode!="encode") {
       if(options.run.TimingEnabled()&&!options.run.Json())std::cout<<"Preparing Boot resources...\n"<<std::flush;
@@ -429,10 +429,11 @@ int main(int argc,char** argv) {
     }
     client->SaveKeys();example::PrintKeyResources(options.run,*client);
     if(options.mode=="full") {
-      runner.PrepareWeights();size_t free=0,total=0;
+      report.PrepareWeights(Sync,[&]{runner.PrepareWeights();},runner.preencoded);size_t free=0,total=0;
       Require(cudaMemGetInfo(&free,&total)==cudaSuccess,"prepared memory query failed");
       example::PrintPreparedMemory(options.run,total-free);
     }
+    report.RecordKeys(*client);
     GpuEventTiming event_timing;
     GpuTraceRange trace_run("cheddar:run", false);
     runner.timing.Reset();const auto probe_begin=Clock::now();
@@ -466,6 +467,7 @@ int main(int argc,char** argv) {
     } else for(int image=options.start;image<options.start+options.count;++image) {
       GpuTraceImage trace_image(image);
       event_timing.BeginImage(image);
+      if(options.run.CoarseTiming())Sync();
       runner.timing.Reset();const auto inference_begin=Clock::now();
       {
       int label;Tensor input(3,32);runner.timing.Cpu(InferencePhase::Input,[&]{input=ReadCifar(options.cifar,image,model,label);});
@@ -531,6 +533,7 @@ int main(int argc,char** argv) {
           options.mode=="full"?runner.exact.values:std::vector<double>{},runner.logits,runner.max_error,runner.relu?runner.relu->BootCount()-previous_boots:0);
       });
       }
+      if(options.run.CoarseTiming())Sync();
       report.AddImage(image,runner.timing.Finish(inference_begin));
       event_timing.FinishImage();
       if(GpuTraceEnabled())std::cout<<"GPU_TRACE_AUDIT {\"image\":"<<image

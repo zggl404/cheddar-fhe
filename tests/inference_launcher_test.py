@@ -128,4 +128,12 @@ if len(sys.argv)>1:
         try:validate_run(raw)
         except ValueError as error:assert 'unsplit hybrid operation' in str(error)
         else:raise AssertionError('accepted full SharedLift in split CPU report')
+    with tempfile.TemporaryDirectory(prefix='cheddar-coarse-wall-') as temporary:
+        path=Path(temporary)/'wall.json'
+        result=subprocess.run([sys.argv[1],'--count','2','--time-cpu','off','--timing-file',str(path)],text=True,capture_output=True)
+        assert result.returncode==0,result.stderr
+        raw=json.loads(path.read_text());validate_run(raw)
+        assert raw['timing_detail']=='coarse' and not raw['ks_profile']
+        assert raw['inference_ms']>0 and raw['fhe_eval_ms']==0
+        assert 'TIMING ' not in result.stdout
 print('INFERENCE_LAUNCHER_TEST_PASS')

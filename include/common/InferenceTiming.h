@@ -79,6 +79,7 @@ class InferenceTiming {
  public:
   explicit InferenceTiming(void (*synchronize)()=nullptr):synchronize_(synchronize){}
   void SetEnabled(bool enabled) {enabled_=enabled;}
+  void SetWallOnly(bool enabled) {wall_only_=enabled;}
   void SetProfiling(bool enabled) {profile_enabled_=enabled;}
   void SetSplitHybrid(bool enabled) {split_hybrid_=enabled;}
   void Reset() { if(active_)throw std::runtime_error("reset during inference interval");times_={};profile_.Start(enabled_&&profile_enabled_,synchronize_); }
@@ -87,13 +88,14 @@ class InferenceTiming {
   InferenceTimes Finish(InferenceClock::time_point begin) {
     if(active_)throw std::runtime_error("unfinished inference interval");
     auto result=times_;result.operations=profile_.Finish();result.split_hybrid=split_hybrid_;
-    if(enabled_)result.total_ns=InferenceNanoseconds(begin);result.Validate();return result;
+    if(enabled_||wall_only_)result.total_ns=InferenceNanoseconds(begin);result.Validate();return result;
   }
  private:
   InferenceTimes times_;
   void (*synchronize_)();
   bool active_=false;
   bool enabled_=true;
+  bool wall_only_=false;
   bool profile_enabled_=false;
   bool split_hybrid_=false;
   OperationProfile profile_;
