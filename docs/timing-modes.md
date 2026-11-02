@@ -5,8 +5,8 @@
 | 开关 | 方法 | 输出 |
 |---|---|---|
 | `--time-cpu on` | `steady_clock` + 同步的独占操作区间 | 端到端、Prepare、Inference，以及 FHE 三分类 |
-| `--time-cuda-event on` | 默认 CUDA stream 上的相邻 event 时间差 | FHE 三分类的 stream elapsed time |
-| `--time-nvtx on` | NVTX + Nsight Systems 的 CUDA launch correlation | FHE 三分类的 kernel duration sum |
+| `--time-cuda-event on --split-hybrid on` | 默认 CUDA stream 上的 KS 阶段 event 对 | 与 NVTX 共用阶段 ID、KS 时间及同次 Inference 剩余墙钟 |
+| `--time-nvtx on --split-hybrid on` | NVTX + Nsight Systems 的 CUDA launch correlation | 逐层 KS GPU 阶段起止时间、跨度及同次 Inference 剩余墙钟 |
 
 `--ks-profile` 保留为 `--time-cpu` 的兼容别名。命令行开关覆盖继承的 tracing 环境变量；
 例如三个开关全 off 时，即使 shell 中存在 `CHEDDAR_GPU_TRACE=1` 也不会开启标记。
@@ -34,11 +34,12 @@ python scripts/run_inference.py --model resnet20 --cifar /data/test_batch.bin \
 
 # CUDA Event 方式：CPU 分类和 NVTX 关闭。
 python scripts/run_inference.py --model resnet20 --cifar /data/test_batch.bin \
-  --time-cuda-event on --count 3 --warmup 1
+  --time-cuda-event on --split-hybrid on --count 6 --warmup 1
 
 # NVTX 方式：launcher 自动运行 nsys profile、导出 SQLite 并计算分类。
 python scripts/run_inference.py --model resnet20 --cifar /data/test_batch.bin \
-  --time-nvtx on --nsys /path/to/nsys --count 3 --warmup 1
+  --time-nvtx on --split-hybrid on --nsys /path/to/nsys --count 6 --warmup 1 \
+  --timing-dir validation/resnet20-ks-spans
 ```
 
 可追加 `--encode-mode pre --key-mode load --key-dir /data/keys/resnet20` 固定编码/密钥模式。
@@ -48,9 +49,9 @@ python scripts/run_inference.py --model resnet20 --cifar /data/test_batch.bin \
 
 ## 共同的分类与边界
 
-公开的三个分类只覆盖 FHE 求值，即 linear + bootstrap + activation + graph operations；
+CPU 及旧 Event（split-hybrid off）的三个分类只覆盖 FHE 求值，即 linear + bootstrap + activation + graph operations；
 不含图片输入/加密、实时权重编码、网络明文参考、逐层解密校验及结果打印。
-每个方法都按同一组正式图片求均值，单位为 ms：
+这两种 FHE 分类按同一组正式图片求均值，单位为 ms：
 
 ```text
 该方法的 FHE total = KeyswitchTime + NonKeyswitchTime + Hybrid
@@ -58,19 +59,19 @@ python scripts/run_inference.py --model resnet20 --cifar /data/test_batch.bin \
 
 | 分类 | 操作 |
 |---|---|
-| KeyswitchTime | ModUp、PseudoModUp、evaluation-key 乘加、必要 ciphertext correction、fused_baby、独立 ModDown、独立置换、StD |
+| KeyswitchTime | ModUp、PseudoModUp、evaluation-key 乘加、必要 ciphertext correction、fused_baby、独立 ModDown、StD |
 | Hybrid | 共享 lift、ModDown+Rescale、置换+累加等不能独占归属的区间 |
-| NonKeyswitchTime | FHE 边界内剩余工作，包括拆分后的共同短基前置 |
+| NonKeyswitchTime | FHE 边界内剩余工作，包括独立置换、拆分后的共同短基前置 |
 
-`fused_baby` 融合的是密钥乘加、必要密文修正和置换，全部归 Keyswitch，
-在拆分模式中也保留融合。giant-step 明文乘加仍归 NonKeyswitch，保留自身融合。
+`fused_baby` 按完整准备阶段记录，在拆分模式中也保留现有融合。
+giant-step 明文乘加仍归 NonKeyswitch，保留自身融合。
 `eacaa59` 版本曾保守地把 fused_baby 放入 Hybrid，旧分类数值不能与当前分类直接比较。
 
 `--split-hybrid on` 是改变执行路径的诊断开关，不是第四种计时方式：
 
 - ModDown+Rescale 拆为独立 ModDown（KS）及 Rescale（NonKS）。
-- HRotAdd/HConjAdd 拆为置换（KS）和额外加法（NonKS）。
-- giant-step 先完成每次旋转的 b 项修正（KS）和置换（KS），再累加不同 giant-step（NonKS）。
+- HRotAdd/HConjAdd 拆为独立置换（NonKS）和额外加法（NonKS）。
+- giant-step 先完成每次旋转的 b 项修正（KS）和独立置换（NonKS），再累加不同 giant-step（NonKS）。
 - SharedLift 拆为共同短基 INTT/归一化（NonKS）、Q 扩展/NTT（NonKS）、P 扩展/NTT（KS）。
 
 拆分后 Hybrid 必须为零。共同前置只执行、记录一次，统一归 NonKeyswitch；
@@ -104,11 +105,21 @@ CUDA Event 在 phase/source/part/op 所有者变化时向 legacy default stream 
 当前实现限单 host thread、legacy default stream；换成多流前须扩展测量边界。
 关闭此功能只取消计时用 event，编码器及内存分配器用于生命周期/流同步的 disable-timing event 仍保留。
 
+上述逐原语 Event 行为保留在 `--split-hybrid off`。开启 split 后，Event 复用 NVTX 的
+`KsTraceSegment` 进入/退出点和 segment_id，每段一对 event，每图统一读回。此时公开分类的
+父区间是同次完整 Inference，NonKS 是 Inference 减去 KS 的剩余墙钟，与旧 FHE total 不同。
+边界端点差异和逐段独立比较命令见 [Event/NVTX 交叉验证](keyswitch-spans.md#event-与-nvtx-独立交叉验证)。
+
 NVTX 本身只有标记，不提供 GPU 耗时。launcher 调用 Nsight Systems，把 CUDA runtime 的
-correlation ID 与 GPU kernel 活动关联，按照 launch 时的 NVTX 所有者分类，
-即使 kernel 在 CPU range 退出后执行也不会错归属。公开值累加 FHE kernel duration；
-不含 memcpy/memset、CPU 提交间隙、设备 idle 或 profiler 后处理。原始分析保留内存活动和 overlap 诊断。
-存在并发 kernel 时 duration sum 可能大于时间轴跨度，不能将它当成墙钟。
+correlation ID 与 GPU 活动关联，即使 kernel 在 CPU range 退出后执行也不会错归属。
+新主口径要求 `--split-hybrid on`，按连续 KS 阶段的“最后 kernel 结束 − 首个 kernel 开始”统计，
+包含内部内存操作和启动/等待间隙。FusedBaby 的 prepare 与后续 finish 分段求和，权重乘加不跨入跨度。
+阶段跨度按实际执行区间归属，包含内部间隙，不是纯 GPU 指令忙碌时间。
+`NVTX_TIMING.NonKeyswitchTime = 同次 Inference 均值 − KS 阶段跨度均值`，因此其 total 是
+Inference 均值，包含当前 Inference 边界内输入、校验等工作，与 CPU/旧 Event 的 FHE total 不同。
+旧 kernel duration sum 仍保留为诊断列。`--split-hybrid off` 仅输出旧融合路径的 kernel 诊断，
+不发布新的 KS 跨度或 Inference 剩余值。单 stream、launch 覆盖、阶段闭合及重叠均经过检查。
+逐层起止时间与共享关系见 [KS 阶段报告](keyswitch-spans.md)。
 
 ## 输出与兼容性
 

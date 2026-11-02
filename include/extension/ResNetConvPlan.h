@@ -46,9 +46,8 @@ struct ConvPlan {
   Map Weights(const Weight& weight,int part) const {
     Map result;
     for(int ky=0;ky<kernel;++ky)for(int kx=0;kx<kernel;++kx) {
-      int bs=((kx-kernel/2)*input.pack+slots)%slots;
-      int gs=((ky-kernel/2)*input.pack*32+slots)%slots;
-      auto& message=result[gs][bs];message.resize(slots);
+      int rotation=((32*(ky-kernel/2)+kx-kernel/2)*input.pack+slots)%slots;
+      auto& message=result[0][rotation];message.resize(slots);
       for(int r=0;r<repeats&&part*repeats+r<output.channels;++r) {
         int co=part*repeats+r;
         for(int ci=0;ci<input.channels;++ci) {
@@ -57,7 +56,7 @@ struct ConvPlan {
             int iy=stride*y+ky-kernel/2,ix=stride*x+kx-kernel/2;
             if(iy<0||ix<0||iy>=input.width||ix>=input.width)continue;
             int anchor=r*input_slots+input.Slot(ci,stride*y,stride*x);
-            message[(anchor+gs)%slots]=w;
+            message[anchor]=w;
           }
         }
       }

@@ -510,6 +510,20 @@ void HoistHandler<word>::EvaluateFinalModDown(ConstContextPtr<word> context,
 
   DvView<word> res_bx = res.BxView();
   DvView<word> res_ax = res.AxView();
+  if(context->param_.split_hybrid_) {
+    const int q_size=context->param_.degree_*context->param_.LevelToNP(pt_level_).GetNumQ();
+    Dv b(q_size),a(q_size);
+    auto b_view=b.View(),a_view=a.View();
+    {
+      KsTraceSegment finish(ks_trace.finish,"finish");
+      mod_switcher.ModDown(b_view,final_accum.BxConstView());
+      mod_switcher.ModDown(a_view,final_accum.AxConstView());
+    }
+    mod_switcher.Rescale(res_bx,b.ConstView());
+    mod_switcher.Rescale(res_ax,a.ConstView());
+    res.SetScale(pt_scale_*input_scale/context->param_.GetRescalePrimeProd(pt_level_));
+    return;
+  }
   mod_switcher.ModDownAndRescale(res_bx, final_accum.BxConstView());
   mod_switcher.ModDownAndRescale(res_ax, final_accum.AxConstView());
 
@@ -587,6 +601,7 @@ void HoistHandler<word>::EvaluateBabyStep(ConstContextPtr<word> context,
                                           bool min_ks) const {
   GpuTraceRange trace("cheddar:part:baby");
   GpuTraceRange source_trace("cheddar:source:linear_transform");
+  if(KsTraceEnabled())ks_trace.babies.erase(&bs);
   NPInfo input_np = input.GetNP();
   int num_main_primes = input_np.num_main_;
   int num_ter_primes = input_np.num_ter_;
@@ -617,6 +632,10 @@ void HoistHandler<word>::EvaluateBabyStep(ConstContextPtr<word> context,
   AssertTrue(bs.empty(), "Hoist: bs should be empty");
 
   // 1. ModUp
+  const bool fused=kFuseBSKeyMult&&beta<=(1<<max_log_beta_);
+  const auto baby_unit=MakeKsTraceUnit("baby",bs_indices_.size()-bs_indices_.count(0),fused);
+  RegisterKsBaby(&bs,baby_unit);
+  KsTraceSegment prepare(baby_unit,"prepare");
   std::vector<Dv> tmp_modup;
   std::vector<DvView<word>> tmp_modup_view;
   for (int i = 0; i < beta; i++) {
@@ -674,6 +693,7 @@ void HoistHandler<word>::EvaluateBabyStep(ConstContextPtr<word> context,
     BSFusedKeyMult(context, bs, tmp_modup, input, evk_map, rotations,
                    *input_bx_pseudo_modup);
   } else {
+    prepare.Finish();
     Ct tmp(modup_np);
 
     for (const auto &bs_idx : bs_indices_) {
@@ -682,6 +702,7 @@ void HoistHandler<word>::EvaluateBabyStep(ConstContextPtr<word> context,
         bs.try_emplace(bs_idx, modup_np);
 
         // KeyMult
+        KsTraceSegment core(baby_unit,"rotation_core");
         context->MultKeyNoModDown(tmp, tmp_modup, input, key);
         DvView<word> tmp_bx_q_view(tmp.bx_.data(), num_q_primes * degree, 0);
         std::vector<DvView<word>> tmp_bx_view = {tmp_bx_q_view};
@@ -696,6 +717,7 @@ void HoistHandler<word>::EvaluateBabyStep(ConstContextPtr<word> context,
                                      {(*input_bx_pseudo_modup).ConstView()});
         }
         // Automorphism
+        core.Finish();
         context->Permute(bs[bs_idx], tmp, bs_idx);
       }
     }
@@ -711,6 +733,7 @@ void HoistHandler<word>::EvaluateGiantStep(ConstContextPtr<word> context,
                                            bool min_ks) const {
   GpuTraceRange trace("cheddar:part:giant");
   GpuTraceRange source_trace("cheddar:source:linear_transform");
+  KsTraceLinear linear(&bs,!(gs_indices_.size()==1&&gs_indices_.at(0)==0));
   AssertFalse(bs.empty(), "Hoist: bs should not be empty");
   const Ct &ref_ct = bs.begin()->second;
   NPInfo ref_np = ref_ct.GetNP();
@@ -728,6 +751,8 @@ void HoistHandler<word>::EvaluateGiantStep(ConstContextPtr<word> context,
 
   // when only gs indices exits
   if (bs_indices_.size() == 1 && *bs_indices_.begin() == 0) {
+    const auto preparation=MakeKsTraceUnit("shared_prepare",0);
+    KsTraceSegment shared(preparation,"prepare");
     AssertFalse(min_ks, "Hoist: min_ks should be false for bs == 1 case");
     const Ct &ct = bs.begin()->second;
     std::vector<Dv> ax_modup;
@@ -750,6 +775,7 @@ void HoistHandler<word>::EvaluateGiantStep(ConstContextPtr<word> context,
       mod_switcher.PseudoModUp(bx_pseudo_tmp_view, ct_bx_view, p_prod_view);
       bx_pseudo = &bx_pseudo_tmp;
     }
+    shared.Finish();
 
     std::vector<std::vector<DvConstView<word>>> ct_bx_ax_view;
     std::vector<int> rot_indices;
@@ -760,6 +786,7 @@ void HoistHandler<word>::EvaluateGiantStep(ConstContextPtr<word> context,
       const auto &pt = pt_map.begin()->second;
 
       if (gs_idx == 0) {
+        KsTraceSegment lift(preparation,"zero_lift");
         AssertFalse(inplace, "Hoist: inplace should be false for gs_idx == 0");
         pt_mult.try_emplace(0, q_prime_np);
         DvConstView<word> ct_bx_view(ct.bx_.data(), num_q_primes * degree, 0);
@@ -772,6 +799,7 @@ void HoistHandler<word>::EvaluateGiantStep(ConstContextPtr<word> context,
         pt_mult.at(0).ax_.ZeroExtend(num_aux_primes * degree);
         pt_mult.at(0).ModifyNP(q_p_prime_np);
         bx_pseudo = &pt_mult.at(0).bx_;
+        lift.Finish();
         context->Mult(final_accum, pt_mult.at(0), pt);
 
         inplace = true;
@@ -779,6 +807,9 @@ void HoistHandler<word>::EvaluateGiantStep(ConstContextPtr<word> context,
       }
 
       const auto &key = evk_map.GetRotationKey(gs_idx);
+
+      const auto unit=MakeKsTraceUnit("giant");
+      KsTraceSegment core(unit,"core");
 
       pt_mult.try_emplace(gs_idx, q_p_prime_np);
 
@@ -793,6 +824,7 @@ void HoistHandler<word>::EvaluateGiantStep(ConstContextPtr<word> context,
         context->elem_handler_.Add(pt_mult_bx_view_vec, q_prime_np,
                                    {pt_mult_bx_view}, bx_pseudo_view);
       }
+      core.Finish();
       context->Mult(pt_mult.at(gs_idx), pt_mult.at(gs_idx), pt);
 
       ct_bx_ax_view.push_back(
@@ -858,6 +890,8 @@ void HoistHandler<word>::EvaluateGiantStep(ConstContextPtr<word> context,
 
     // giant-step rotation
     if (gs_idx != 0) {
+      const auto unit=MakeKsTraceUnit("giant");
+      KsTraceSegment core(unit,"core");
       // Perform mod_down and re mod_up --> mult key(gs_idx) --> permute
       DvView<word> tmp_moddown_view = tmp_moddown.View(0);
       mod_switcher.ModDown(tmp_moddown_view, accum.AxConstView());
@@ -871,6 +905,7 @@ void HoistHandler<word>::EvaluateGiantStep(ConstContextPtr<word> context,
         context->elem_handler_.Add(tmp_bx_view, q_p_prime_np, {tmp.BxConstView()},
                                    {accum.BxConstView()});
       }
+      core.Finish();
       if (!final_accum_init) {
         context->Permute(final_accum, tmp, gs_idx);
         final_accum_init = true;
@@ -949,6 +984,9 @@ void HoistHandler<word>::EvaluateGiantStepOptimized(
   for (const auto &[gs_idx, ct] : accum) {
     if (gs_idx == 0) continue;
 
+    const auto unit=MakeKsTraceUnit("giant");
+    KsTraceSegment core(unit,"core");
+
     DvView<word> tmp_moddown_view = tmp_moddown.View(0);
     mod_switcher.ModDown(tmp_moddown_view, ct.AxConstView());
     std::vector<DvView<word>> tmp_modup_view_vector;
@@ -967,6 +1005,7 @@ void HoistHandler<word>::EvaluateGiantStepOptimized(
       std::vector<DvView<word>> bx{switched.BxView()};
       context->elem_handler_.Add(bx,ref_ct_np,{switched.BxConstView()},{ct.BxConstView()});
     }
+    core.Finish();
     context->Permute(switched, switched, gs_idx);
     if(&switched!=final_accum)context->Add(*final_accum, *final_accum, switched);
     first = false;

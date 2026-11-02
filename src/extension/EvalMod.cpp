@@ -1,4 +1,5 @@
 #include "extension/EvalMod.h"
+#include "common/GpuTrace.h"
 
 #include "common/Assert.h"
 #include "common/CommonUtils.h"
@@ -53,6 +54,7 @@ EvalMod<word>::EvalMod(ConstContextPtr<word> context,
 template <typename word>
 void EvalMod<word>::Evaluate(ConstContextPtr<word> context, Ct &res,
                              const Ct &input, const Evk &mult_key) {
+  GpuTraceRange path("subpath","evalmod");
   context->Add(res, input, initial_const_);
   mod_functions_[0].Evaluate(context, res, res, mult_key);
   for (const auto &da : double_angle_) {

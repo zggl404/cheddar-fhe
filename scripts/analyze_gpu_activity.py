@@ -8,6 +8,7 @@ import json
 from pathlib import Path
 import sqlite3
 from inference_timing import KEY_OPS, HYBRID_OPS, NON_KEY_OPS, SPLIT_FORBIDDEN_OPS
+from keyswitch_segments import metadata, reconstruct
 
 FHE_PHASES = {'linear_ms', 'bootstrap_ms', 'activation_ms', 'graph_ops_ms'}
 SOURCES = ('rotation', 'linear_transform', 'conjugation', 'relinearization',
@@ -54,16 +55,25 @@ def label_launches(ranges, apis):
             stack = [r for r in stack if r['end'] >= api['start']]
             labels = {}
             sources = []
+            subpaths = []
             for scope in stack:
                 if scope['end'] < api['end']:
                     raise ValueError('CUDA API crosses its NVTX scope')
                 fields = scope['text'].split(':', 2)
                 if len(fields) == 3:
+                    if fields[1] == 'ks':
+                        if 'ks' in labels:
+                            raise ValueError('nested KS segments would double count time')
+                        labels['ks'] = metadata(fields[2])
+                        continue
                     labels[fields[1]] = fields[2]
+                    if fields[1] == 'subpath':
+                        subpaths.append(fields[2])
                     if fields[1] == 'source':
                         sources.append(fields[2])
             if 'linear_transform' in sources:
                 labels['source'] = 'linear_transform'  # MinKS can nest HRot.
+            labels['subpath'] = '/'.join(subpaths)
             key = api['correlationId']
             if key in result:
                 raise ValueError(f'duplicate runtime correlation ID: {key}')
@@ -129,6 +139,7 @@ def analyze(database, output, warmup=1, log=None, split_hybrid=False):
     intervals = defaultdict(list)
     seen = set()
     kernel_correlations = Counter()
+    activities = []
     fields = ('kind', 'image', 'measured', 'phase', 'layer', 'source', 'part', 'op',
               'category', 'start_ns', 'end_ns', 'duration_ns', 'correlation_id',
               'device', 'context', 'stream', 'name', 'api_start_ns', 'api_end_ns')
@@ -169,6 +180,11 @@ def analyze(database, output, warmup=1, log=None, split_hybrid=False):
                 selected = image in measured and fhe
                 op, source = labels.get('op', 'other'), labels.get('source', 'none')
                 name = strings.get(row.get('demangledName'), strings.get(row.get('shortName'), kind))
+                if image >= 0:
+                    activities.append(dict(kind=kind, image=image, fhe=fhe, category=category, op=op,
+                        layer=labels.get('layer', 'none'), subpath=labels.get('subpath', ''), ks=labels.get('ks'),
+                        start_ns=start, end_ns=end, device=row.get('deviceId'), context=row.get('contextId'),
+                        stream=row.get('streamId')))
                 writer.writerow(dict(kind=kind, image=image, measured=int(image in measured), phase=phase,
                     layer=labels.get('layer', 'none'), source=source, part=labels.get('part', 'none'), op=op,
                     category=category, start_ns=start, end_ns=end, duration_ns=end-start,
@@ -199,9 +215,12 @@ def analyze(database, output, warmup=1, log=None, split_hybrid=False):
                 raise ValueError(f'kernel launch has missing/duplicate GPU records: {correlation}')
     if launch_count != sum(per_image[i]['kernel_count'] for i in measured):
         raise ValueError('runtime launch census does not match measured GPU kernels')
+    spans = reconstruct(ranges, activities, output, images, measured) if split_hybrid else None
     image_rows = []
     for image in sorted(measured):
         row = dict(image=image, **per_image[image])
+        if spans:
+            row.update(spans['images'][image])
         row['kernel_total_ns'] = sum(row.get(f'kernel_{c}_ns', 0) for c in ('keyswitch', 'hybrid', 'other'))
         row['kernel_union_ns'] = union_ns(intervals[image])
         row['kernel_overlap_ns'] = row['kernel_total_ns'] - row['kernel_union_ns']
@@ -224,7 +243,8 @@ def analyze(database, output, warmup=1, log=None, split_hybrid=False):
             if count != counters[f'{kind}_records'] or ns != counters[f'{kind}_total_ns']:
                 raise ValueError('raw SQLite GPU totals disagree with exported records')
     diagnostics = [dict(r) for r in connection.execute('SELECT * FROM DIAGNOSTIC_EVENT')] if 'DIAGNOSTIC_EVENT' in tables else []
-    summary = dict(schema_version=1, method='nsys_gpu_activity_launch_correlation', split_hybrid=split_hybrid,
+    summary = dict(schema_version=2, method=spans['method'] if spans else 'nsys_gpu_activity_launch_correlation', split_hybrid=split_hybrid,
+        ks_spans=spans, timing_diagnostic_only=not split_hybrid,
         warmup_images=images[:warmup], measured_images=sorted(measured), records=dict(counters),
         uncorrelated_records=0, duplicate_records=0, accounting_error_ns=kernel_total-classified_total,
         nvtx_range_audit=range_audit, measured_kernel_launches=launch_count,
@@ -238,7 +258,7 @@ def analyze(database, output, warmup=1, log=None, split_hybrid=False):
                   for category in ('keyswitch', 'hybrid', 'other')} for source in SOURCES},
         diagnostics=diagnostics,
         images=image_rows,
-        policy='fused_baby and ciphertext correction are keyswitch-related; shared_lift_common is non-keyswitch; shared_lift, moddown_rescale and automorphism_accum are hybrid; sum of durations is not wall time')
+        policy=spans['policy'] if spans else 'Legacy fused-path kernel diagnostics only; duration sums are not wall time')
     (output / 'summary.json').write_text(json.dumps(summary, indent=2)+'\n')
     connection.close()
     return summary

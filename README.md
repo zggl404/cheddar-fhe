@@ -4,6 +4,10 @@
 你只需准备受支持的 CIFAR-10 ONNX 模型，以及 `test_batch.bin`。
 流程是：**编译 → 逐个导出权重 → 运行模型**。
 
+ResNet 卷积、Pooling 和 FC 的默认旋转组织已对齐到官方 AE 的已核实路径；
+其他 CNN 复用其共享空间 Baby 的卷积分解。实现边界、服务器路径和验证记录见
+[AE 式模型实现](docs/ae-models.md)。
+
 ## 1. 在已有 Docker 环境中编译
 
 以下假设容器中的 CUDA、编译器和依赖已准备好，在仓库根目录执行。
@@ -17,7 +21,7 @@ cmake -S . -B build \
   -DBUILD_RESNET_EXAMPLE=ON \
   -DBUILD_CNN_EXAMPLE=ON \
   -DCHEDDAR_NVTX_TRACE=ON \
-  -DCHEDDAR_CUDA_EVENT_TRACE=OFF \
+  -DCHEDDAR_CUDA_EVENT_TRACE=ON \
   -DCHEDDAR_PLAINTEXT_REFERENCE=OFF
 cmake --build build --parallel 12 --target resnet_cifar cnn_cifar
 ```
@@ -114,7 +118,7 @@ python scripts/run_inference.py --model vgg11 --cifar "$CIFAR_BIN" --count 6 --w
 按需独立添加 `--time-cpu on`、`--time-cuda-event on`、`--time-nvtx on`；
 每种都报告 KeyswitchTime、NonKeyswitchTime、Hybrid，只有 CPU 方式额外报告端到端/准备/推理墙钟。
 NVTX 方式需要 Nsight Systems，GPU 方式需要先启用对应 CMake 功能。
-实现、边界和命令见[三种计时方式](docs/timing-modes.md)。
+复制执行命令见[计时与全模型验证](docs/run-timing.md)，实现与边界见[三种计时方式](docs/timing-modes.md)。
 
 密钥可通过 `--key-mode save|load --key-dir /data/keys/模型名` 预生成保存并在后续运行加载，
 默认仍为 `generate`，详见[KMS 使用说明](docs/kms.md)。
@@ -159,8 +163,9 @@ CPU 墙钟计时的阶段边界在所有模型中一致：
 
 预编码计入模型准备；实时编码计入推理阶段。Boot 准备与 Boot 执行分开统计。
 三段总计覆盖所有图片，包括预热；每图均值只统计同一组正式图片。
-上述 CPU 时间为同步墙钟，单位 ms，包含相应区段的主机开销。Event/NVTX 的三分类仅覆盖 FHE，
-分别报告 stream elapsed / kernel duration sum，不能当作端到端墙钟。
+上述 CPU 时间为同步墙钟，单位 ms，包含相应区段的主机开销。CPU 分类覆盖 FHE。
+split 模式下 Event/NVTX 共用 KS 阶段 ID，分别报告 Event elapsed / GPU 阶段跨度及同次完整 Inference 剩余墙钟。
+逐段独立比较命令见 [交叉验证](docs/keyswitch-spans.md#event-与-nvtx-独立交叉验证)；旧 Event 的 FHE 口径保留在 split off。
 
 核对端到端耗时：
 
@@ -178,7 +183,22 @@ FHE 对精确 ReLU 的误差包含激活多项式近似；逐层 `1e-2` 校验�
 十个真实模型的全预编码时间、显存和输出误差见[96 GB GPU 实测报告](docs/gpu96-benchmark.md)。
 `models/`、`build/`、`validation/` 不提交到 GitHub。许可证见 [LICENSE](LICENSE)。
 
-## 5. 自动统计全部模型的 NVTX 时间
+## 5. 自动统计全部模型的时间
+
+同时验证基线、Event、NVTX 和 CPU 四次独立运行：
+
+```bash
+python scripts/benchmark_timing.py \
+  --build-dir build --models-dir models --cifar "$CIFAR_BIN" \
+  --output validation/timing-all --count 6 --warmup 1 --encode-mode auto
+```
+
+默认处理全部十个模型，固定 `split-hybrid on`，逐模型生成临时密钥并使用 load 测量，结束后清理。
+每个模型会核对四次运行的 Logits，以及 Event/NVTX 每个阶段的 ID 和归属；
+`summary.csv` 汇总准备、推理和 KS 时间，详细命令与字段见[计时执行说明](docs/run-timing.md)。
+`--models resnet20 resnet110` 可选择部分模型；`nsys` 不在 PATH 时追加 `--nsys /path/to/nsys`。
+
+只需要基线与 NVTX 两次运行时，仍可使用下面的专用脚本。
 
 准备好上面十个模型的 `.bin` 权重、CIFAR 文件、GNU `time` 和 Nsight Systems CLI。
 脚本默认逐个处理全部十个模型，每个模型运行两次：无 NVTX/Event 的粗粒度墙钟基线，
@@ -225,15 +245,18 @@ python scripts/benchmark_nvtx.py \
 | `*_inference_total_ms` | 全部图片的输入开始至校验/输出及末尾同步完成，含预热 |
 | `*_inference_mean_ms` | 排除 warmup 后的单图 Inference 均值 |
 | `*_other_prepare_and_teardown_ms` | 端到端扣除 key load、预编码、全部 Inference 的其余部分 |
-| `nvtx_keyswitch_ms` | 同一组正式图片的 Keyswitch kernel duration 均值 |
+| `nvtx_keyswitch_ms` | 同一组正式图片的 KS GPU 阶段跨度均值 |
+| `fused_baby_inclusive_ms` | Baby 准备及关联 finish 子项，已包含在 KS 总量内 |
+| `nvtx_keyswitch_kernel_diagnostic_ms` | 另存 KS kernel duration sum，供对照诊断 |
 | `non_keyswitch_residual_ms` | **profiled Inference 均值 − 同次采集的 NVTX Keyswitch 均值** |
 | `nvtx_other_kernel_ms` / `nvtx_hybrid_ms` | 另外保留纯 GPU Other 与 Hybrid，避免把剩余墙钟解释为纯 GPU NonKeyswitch |
 
-这套相减口径适合观察“整次推理中，除已识别 Keyswitch kernel 之外的剩余时间”。
+这套相减口径观察整次推理扣除 KS GPU 阶段后的剩余时间，逐层起止时间见 [KS 阶段报告](docs/keyswitch-spans.md)。
 剩余时间包含主机提交/等待、设备空闲、输入、明文参考（若开启）、解密校验、运行期编码及尚未拆开的 Hybrid。
 它和纯 GPU Other 有不同含义，也不能用基线 Inference 减去另一次 NVTX 的 Keyswitch。
 本脚本的 `--split-hybrid` 默认 `on`，Hybrid 必须为零；共同短基前置计入 NonKeyswitch。
-需要测原融合路径时显式加 `--split-hybrid off`。拆分会改变执行路径并可能增加耗时，报告中保留所选模式。
+需要测原融合路径时显式加 `--split-hybrid off`，只保留 kernel 诊断，主 KS 跨度和 residual 为 null。
+拆分会改变执行路径并可能增加耗时，报告中保留所选模式。
 普通 `run_inference.py` 入口的拆分默认仍为 `off`。
 当前相减限定为无 kernel 重叠的执行，脚本发现重叠会拒绝发布这个差值。
 

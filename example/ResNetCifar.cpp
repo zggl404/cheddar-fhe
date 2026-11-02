@@ -259,6 +259,7 @@ class Runner {
     Evaluate(InferencePhase::Graph,[&]{context_->Copy(skip,ciphertext);});
     std::unique_ptr<PackedLinear> downsample;
     if(projection) {
+      GpuTraceRange shortcut_trace("layer",(prefix+".shortcut").c_str());
       const auto& w=model_->At(prefix+".shortcut.weight"); const auto& b=model_->At(prefix+".shortcut.bias");
       PackedLinear* operation=Cached(prefix+".shortcut");
       if(!operation) {timing.Gpu(InferencePhase::WeightPrepare,[&]{downsample=MakeConv(context_,skip_shape,w,b,2,bs_,range_);});operation=downsample.get();}
@@ -283,14 +284,14 @@ class Runner {
     PackedLinear* pooling=Cached("avgpool");
     if(!pooling) {timing.Gpu(InferencePhase::WeightPrepare,[&]{pool=MakePool(context_,shape,bs_);});pooling=pool.get();}
     EvkRequest request; pooling->AddRequiredRotations(request); PrepareKeys(request);
-    Evaluate(InferencePhase::Linear,[&]{pooling->Evaluate(ciphertext,ciphertext,client_.GetEvkMap());});
+    Evaluate(InferencePhase::Linear,[&]{GpuTraceRange layer("layer","avgpool");pooling->Evaluate(ciphertext,ciphertext,client_.GetEvkMap());});
     shape=Tensor(shape.channels,1);
     example::PlaintextReference(timing,[&]{reference=Pool(reference);exact=Pool(exact);});Check("avgpool");
     const auto& w=model_->At("fc.weight"); const auto& b=model_->At("fc.bias");
     PackedLinear* classifier=Cached("fc");
     if(!classifier) {timing.Gpu(InferencePhase::WeightPrepare,[&]{fc=MakeClassifier(context_,w,b,bs_,range_);});classifier=fc.get();}
     request.clear(); classifier->AddRequiredRotations(request); PrepareKeys(request);
-    Evaluate(InferencePhase::Linear,[&]{classifier->Evaluate(ciphertext,ciphertext,client_.GetEvkMap());});
+    Evaluate(InferencePhase::Linear,[&]{GpuTraceRange layer("layer","fc");classifier->Evaluate(ciphertext,ciphertext,client_.GetEvkMap());});
     shape=Tensor(10,1);
     example::PlaintextReference(timing,[&]{reference=FC(reference,w,b);exact=FC(exact,w,b);});Check("fc");
   }
@@ -435,7 +436,7 @@ int main(int argc,char** argv) {
       example::PrintPreparedMemory(options.run,total-free);
     }
     report.RecordKeys(*client);
-    GpuEventTiming event_timing;
+    GpuEventTiming event_timing(65536,options.run.split_hybrid);
     GpuTraceRange trace_run("cheddar:run", false);
     runner.timing.Reset();const auto probe_begin=Clock::now();
     if(options.mode=="encode") EncodeProbe(context,*client,runner.timing);
@@ -444,7 +445,7 @@ int main(int argc,char** argv) {
       runner.timing.Cpu(InferencePhase::Input,[&]{for(size_t i=0;i<probe.values.size();++i)probe.values[i]=.99*options.relu_range*std::sin(i*.031);});
       runner.Encrypt(probe);
       if(options.mode=="boot") {
-        runner.Evaluate(InferencePhase::Bootstrap,[&]{context->Boot(runner.ciphertext,runner.ciphertext,client->GetEvkMap());});
+        runner.Evaluate(InferencePhase::Bootstrap,[&]{GpuTraceRange layer("layer","boot_probe");context->Boot(runner.ciphertext,runner.ciphertext,client->GetEvkMap());});
         runner.Check("boot_probe");
       } else {
         auto expected=Pack(probe,options.relu_range);

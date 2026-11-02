@@ -12,6 +12,7 @@ assert union_ns([(1, 5), (3, 7), (10, 12)]) == 8
 assert classify({'op':'fused_baby','source':'linear_transform'}) == 'keyswitch'
 assert classify({'op':'shared_lift_common','source':'sparse_to_dense'}) == 'other'
 assert classify({'op':'key_correction','source':'rotation'}) == 'keyswitch'
+assert classify({'op':'automorphism','source':'rotation'},True) == 'other'
 assert classify({'op':'fused_baby','source':'linear_transform'},True) == 'keyswitch'
 assert classify({'op':'shared_lift_common','source':'sparse_to_dense'},True) == 'other'
 for op in ('moddown_rescale','automorphism_accum','shared_lift'):

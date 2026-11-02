@@ -588,6 +588,8 @@ void Context<word>::AdjustLevelForMultKey(int &level, const int num_q,
 
 template <typename word>
 void Context<word>::MultKey(Ct &res, const Ct &a, const Evk &key) const {
+  const auto unit=MakeKsTraceUnit("multkey");
+  KsTraceSegment segment(unit,"core");
   NPInfo np = a.GetNP();
   int level = param_.NPToLevel(np);
   int num_aux = key.GetNP().num_aux_;
@@ -724,6 +726,8 @@ template <typename word>
 void Context<word>::RelinearizeRescale(Ct &res, const Ct &a,
                                        const Evk &key) const {
   GpuTraceRange trace("cheddar:source:relinearization");
+  const auto unit=MakeKsTraceUnit("relinearize_rescale");
+  KsTraceSegment segment(unit,"core");
   AssertTrue(a.HasRx(), "RelinearizeRescale requires aux");
 
   int level = param_.NPToLevel(a.GetNP());
@@ -740,6 +744,18 @@ void Context<word>::RelinearizeRescale(Ct &res, const Ct &a,
 
   auto res_bx_view = res.BxView();
   auto res_ax_view = res.AxView();
+  if(param_.split_hybrid_) {
+    const auto& switcher=mod_switch_handlers_.at(level);
+    const int q_size=param_.degree_*param_.LevelToNP(level).GetNumQ();
+    Dv b(q_size),a_down(q_size);
+    auto b_view=b.View(),a_view=a_down.View();
+    switcher.ModDown(b_view,accum.BxConstView());
+    switcher.ModDown(a_view,accum.AxConstView());
+    segment.Finish();
+    switcher.Rescale(res_bx_view,b.ConstView());
+    switcher.Rescale(res_ax_view,a_down.ConstView());
+    return;
+  }
   mod_switch_handlers_.at(level).ModDownAndRescale(res_bx_view,
                                                    accum.BxConstView());
   mod_switch_handlers_.at(level).ModDownAndRescale(res_ax_view,

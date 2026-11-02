@@ -21,14 +21,15 @@ DecomposedLinear::DecomposedLinear(std::shared_ptr<Boot> context,const Node& nod
   bool q_only=plan_.dense||node.kernel==1;
   if(!plan_.pool) {
     if(!plan_.depthwise)trace(plan_.input_slots,plan_.repeats,level);
-    if(!q_only)for(int rot:{input.pack,slots-input.pack,32*input.pack,slots-32*input.pack})request(rot,level);
+    if(!q_only)for(int dy=-1;dy<=1;++dy)for(int dx=-1;dx<=1;++dx)
+      request(((32*dy+dx)*input.pack+slots)%slots,level);
     int per_part=plan_.dense?1:node.kernel*node.kernel;
     plaintexts_+=(end_part_-first_part_)*per_part;
     estimated_bytes_+=(end_part_-first_part_)*per_part*bytes(level,q_only?0:p.alpha_);
     if(encode)for(int part=first_part_;part<end_part_;++part) {
       auto map=plan_.Weights(model.At(node.weight),part);
       if(q_only) {pointwise_.emplace_back();context_->encoder_.Encode(pointwise_.back(),level,p.GetScale(level),map.at(0).at(0));}
-      else spatial_.emplace_back(context_,map,level,p.GetScale(level));
+      else spatial_.emplace_back(context_,map,level,p.GetScale(level),true);
     }
   }
   for(auto [distance,count]:plan_.Reductions())trace(distance,count,plan_.pool?level:level-1);
@@ -69,10 +70,11 @@ void DecomposedLinear::Evaluate(Ct& output,const Ct& input,const EvkMap<Word>& k
     Require(!pointwise_.empty()||!spatial_.empty(),"CNN descriptor was not encoded");
     if(!plan_.depthwise)context_->Trace(expanded,plan_.input_slots,plan_.repeats,expanded,keys);
     std::map<int,Ct> baby;
-    if(!spatial_.empty())spatial_.front().EvaluateBabyStep(context_,baby,expanded,keys);
+    if(!spatial_.empty()) {GpuTraceRange path("subpath","spatial_baby");spatial_.front().EvaluateBabyStep(context_,baby,expanded,keys);}
     // Horner accumulation uses only the differences between adjacent group
     // positions, instead of keeping a rotation key for every output group.
     for(int part=end_part_-1;part>=first_part_;--part) {
+      GpuTraceRange group("subpath",("group"+std::to_string(part)).c_str());
       int index=part-first_part_;
       if(!pointwise_.empty()) {context_->Mult(weighted,expanded,pointwise_[index]);context_->Rescale(reduced,weighted);}
       else spatial_[index].EvaluateGiantStep(context_,reduced,baby,keys);

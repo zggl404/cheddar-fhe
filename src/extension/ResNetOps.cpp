@@ -21,8 +21,10 @@ class ConvBN {
       for(int n=1;n<count;n*=2)rotations.AddRequest(distance*n,level);
     };
     if(plan_.kernel==3) {
-      for(int rotation:{input.pack,plan_.slots-input.pack,32*input.pack,plan_.slots-32*input.pack})
-        rotations.AddRequest(rotation,2);
+      for(int dy=-1;dy<=1;++dy)for(int dx=-1;dx<=1;++dx) {
+        int rotation=((32*dy+dx)*input.pack+plan_.slots)%plan_.slots;
+        if(rotation)rotations.AddRequest(rotation,2);
+      }
     }
     trace(1,input.pack,1);trace(32,input.pack,1);
     trace(1024,ConvPlan::PaddedChannels(input.channels)/(input.pack*input.pack),1);
@@ -38,7 +40,10 @@ class ConvBN {
       if(plan_.kernel==1) {
         projection_.emplace_back();
         context_->encoder_.Encode(projection_.back(),2,p.GetScale(2),weights.at(0).at(0));
-      } else weights_.emplace_back(context_,weights,2,p.GetScale(2));
+      } else {
+        // AE keeps all spatial rotations in the shared baby batch.
+        weights_.emplace_back(context_,weights,2,p.GetScale(2),true);
+      }
       masks_.emplace_back(context_,plan_.Mask(part),1,p.GetScale(1),true);
     }
     estimated_bytes+=bytes(0,0);
@@ -58,20 +63,27 @@ class ConvBN {
     Ct expanded,weighted,temporary,part_result,sum;
     context_->Copy(expanded,input);expanded.SetNumSlots(plan_.slots);
     std::map<int,Ct> baby;
-    if(plan_.kernel==3)weights_.front().EvaluateBabyStep(context_,baby,expanded,keys);
+    if(plan_.kernel==3) {GpuTraceRange path("subpath","spatial_baby");weights_.front().EvaluateBabyStep(context_,baby,expanded,keys);}
     for(int part=0;part<plan_.parts;++part) {
-      if(plan_.kernel==1) {
-        context_->Mult(weighted,expanded,projection_[part]);
-        context_->Rescale(temporary,weighted);
-      } else weights_[part].EvaluateGiantStep(context_,temporary,baby,keys);
-      context_->Trace(temporary,1,plan_.input.pack,temporary,keys);
-      context_->Trace(temporary,32,plan_.input.pack,temporary,keys);
-      context_->Trace(temporary,1024,ConvPlan::PaddedChannels(plan_.input.channels)/
-                        (plan_.input.pack*plan_.input.pack),temporary,keys);
-      masks_[part].Evaluate(context_,part_result,temporary,keys);
+      GpuTraceRange group("subpath",("group"+std::to_string(part)).c_str());
+      {
+        GpuTraceRange path("subpath","weight");
+        if(plan_.kernel==1) {
+          context_->Mult(weighted,expanded,projection_[part]);
+          context_->Rescale(temporary,weighted);
+        } else weights_[part].EvaluateGiantStep(context_,temporary,baby,keys);
+      }
+      {
+        GpuTraceRange path("subpath","channel_reduce");
+        context_->Trace(temporary,1,plan_.input.pack,temporary,keys);
+        context_->Trace(temporary,32,plan_.input.pack,temporary,keys);
+        context_->Trace(temporary,1024,ConvPlan::PaddedChannels(plan_.input.channels)/
+                          (plan_.input.pack*plan_.input.pack),temporary,keys);
+      }
+      {GpuTraceRange path("subpath","gather");masks_[part].Evaluate(context_,part_result,temporary,keys);}
       if(part==0)context_->Copy(sum,part_result);else context_->Add(sum,sum,part_result);
     }
-    context_->Trace(sum,plan_.output_slots,plan_.slots/plan_.output_slots,sum,keys);
+    {GpuTraceRange path("subpath","output_repeat");context_->Trace(sum,plan_.output_slots,plan_.slots/plan_.output_slots,sum,keys);}
     context_->Add(output,sum,bias_);output.SetNumSlots(plan_.output_slots);
     Require(context_->param_.NPToLevel(output.GetNP())==0,"AE convolution output level mismatch");
     context_->AssertSameScale(output.GetScale(),context_->param_.GetScale(0));
@@ -106,8 +118,8 @@ PackedLinear::PackedLinear(std::shared_ptr<Boot> context, Diagonals diagonals,
           slots_<=context_->param_.degree_/2 && !(slots_&(slots_-1)),
           "invalid affine transform: level="+std::to_string(level)+" slots="+std::to_string(slots_)+
           " degree="+std::to_string(context_->param_.degree_)+" diagonals="+std::to_string(diagonals.size()));
-  Require(baby_step > 0 && baby_step <= 128 && !(baby_step & (baby_step-1)),
-          "baby step must be a power of two in [1,128]");
+  Require(baby_step > 0 && baby_step <= slots_ && !(baby_step & (baby_step-1)),
+          "baby step must be a power of two no larger than the slot count");
   Require(output_slots_>0&&output_slots_<=slots_&&slots_%output_slots_==0&&
           !(output_slots_&(output_slots_-1)),"invalid output repetition layout");
   const auto& p=context_->param_;
@@ -185,7 +197,7 @@ std::unique_ptr<PackedLinear> MakePool(std::shared_ptr<Boot> context,
     message[c]=1.0/64;
   }
   return std::make_unique<PackedLinear>(context,std::move(diagonals),std::vector<double>(slots),
-      2,bs?bs:16,std::vector<std::pair<int,int>>{{4,8},{128,8}},encode,64);
+      2,bs?bs:slots,std::vector<std::pair<int,int>>{{4,8},{128,8}},encode,64);
 }
 std::unique_ptr<PackedLinear> MakeClassifier(std::shared_ptr<Boot> context,
     const Weight& weight, const Weight& bias, int bs, double range,bool encode) {
@@ -199,7 +211,7 @@ std::unique_ptr<PackedLinear> MakeClassifier(std::shared_ptr<Boot> context,
   }
   std::vector<double> packed_bias(64);
   for(int c=0;c<10;++c) packed_bias[c]=bias.values[c]/range;
-  return std::make_unique<PackedLinear>(context,std::move(diagonals),packed_bias,1,bs?bs:16,std::vector<std::pair<int,int>>{},encode);
+  return std::make_unique<PackedLinear>(context,std::move(diagonals),packed_bias,1,bs?bs:8,std::vector<std::pair<int,int>>{},encode);
 }
 
 EvalReLU::EvalReLU(std::shared_ptr<Boot> context) : context_(std::move(context)) {
@@ -218,23 +230,24 @@ EvalReLU::EvalReLU(std::shared_ptr<Boot> context) : context_(std::move(context))
 }
 void EvalReLU::Evaluate(Ct& output, const Ct& input, const EvkMap<Word>& keys, InferenceTiming* timing) {
   Ct original, sign, temporary, aligned;
-  auto measure=[&](InferencePhase phase,auto function) {
+  auto measure=[&](InferencePhase phase,const char* name,auto function) {
+    GpuTraceRange path("subpath",name);
     if(timing)timing->Gpu(phase,function);else function();
   };
   auto observe=[&](const char* name,const Ct& ct) {
-    if(observer)measure(InferencePhase::ValidationOutput,[&]{observer(name,ct);});
+    if(observer)measure(InferencePhase::ValidationOutput,name,[&]{observer(name,ct);});
   };
-  measure(InferencePhase::Bootstrap,[&]{context_->Boot(original,input,keys);++boot_count_;});
+  measure(InferencePhase::Bootstrap,"boot_input",[&]{context_->Boot(original,input,keys);++boot_count_;});
   observe("boot_input",original);
-  measure(InferencePhase::Activation,[&]{polynomials_[0].Evaluate(context_,temporary,original,keys.GetMultiplicationKey());});
+  measure(InferencePhase::Activation,"poly1",[&]{polynomials_[0].Evaluate(context_,temporary,original,keys.GetMultiplicationKey());});
   observe("poly1",temporary);
-  measure(InferencePhase::Activation,[&]{polynomials_[1].Evaluate(context_,sign,temporary,keys.GetMultiplicationKey());});
+  measure(InferencePhase::Activation,"poly2",[&]{polynomials_[1].Evaluate(context_,sign,temporary,keys.GetMultiplicationKey());});
   observe("poly2",sign);
-  measure(InferencePhase::Bootstrap,[&]{context_->Boot(temporary,sign,keys);++boot_count_;});
+  measure(InferencePhase::Bootstrap,"boot_sign",[&]{context_->Boot(temporary,sign,keys);++boot_count_;});
   observe("boot_sign",temporary);
-  measure(InferencePhase::Activation,[&]{polynomials_[2].Evaluate(context_,sign,temporary,keys.GetMultiplicationKey());});
+  measure(InferencePhase::Activation,"poly3",[&]{polynomials_[2].Evaluate(context_,sign,temporary,keys.GetMultiplicationKey());});
   observe("poly3_half",sign);
-  measure(InferencePhase::Activation,[&]{
+  measure(InferencePhase::Activation,"final_multiply",[&]{
     context_->Add(sign,sign,half_);
     context_->LevelDown(aligned,original,output_level_+1);
     context_->HMult(output,aligned,sign,keys.GetMultiplicationKey(),true);

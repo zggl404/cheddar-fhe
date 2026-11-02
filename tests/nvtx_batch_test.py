@@ -38,7 +38,7 @@ for image in range(count):
         numerical_passed=not failed,numerical_failures=int(failed),
         model=Path(args['--weights']).stem,image=image,prediction=0,fhe_logits=logits)))
     if failed:print('NUMERICAL_WARNING test.relu image='+str(image)+' max_abs_error=0.02 threshold=0.01',file=sys.stderr)
-    if args['--time-nvtx']=='on':print('GPU_TRACE_AUDIT '+json.dumps(dict(image=image,ranges=5)))
+    if args['--time-nvtx']=='on':print('GPU_TRACE_AUDIT '+json.dumps(dict(image=image,ranges=8 if args['--split-hybrid']=='on' else 6)))
 report=dict(rows[0]);report.pop('image');report.update(inference_ms=10.*count,dispatch_ms=10.*count,
     images=rows,total_ms=40.+10*count,model_prepare_ms=35.,boot_prepare_ms=5.,timing_detail='coarse',
     key_mode=mode,key_load_ms=4. if mode=='load' else 0.,weight_preencode_ms=8. if pre else 0.,
@@ -55,7 +55,7 @@ Path(sys.argv[3]).write_text('real 0.09\nuser 0.02\nsys 0.01\n')
 raise SystemExit(code)
 '''
 NSYS=r'''
-import sqlite3,subprocess,sys
+import json,sqlite3,subprocess,sys
 from pathlib import Path
 start=next(i for i,a in enumerate(sys.argv) if a.startswith('--output='))
 path=Path(sys.argv[start].split('=',1)[1]+'.sqlite')
@@ -76,9 +76,14 @@ u=1000000
 scopes=[(900*u,(1000+200*count)*u,'cheddar:run')]
 for image in range(count):
     base=1000+200*image
-    for a,b,label in [(0,100,'image:'+str(image)),(5,90,'phase:linear_ms'),(10,80,'source:linear_transform'),
+    for a,b,label in [(0,100,'image:'+str(image)),(5,90,'phase:linear_ms'),(6,89,'layer:conv1'),(10,80,'source:linear_transform'),
                        (20,30,'op:key_mult'),(40,50,'op:'+('key_correction' if split else 'moddown_rescale'))]:
         scopes.append(((base+a)*u,(base+b)*u,'cheddar:'+label))
+    if split:
+        for unit,a,b in [(1,19,31),(2,39,51)]:
+            meta=dict(ks_id=unit,segment_id=unit,kind='multkey',segment='core',logical_ks=1,
+                      lt_id=0,baby_id=0,includes_permutation=False)
+            scopes.append(((base+a)*u,(base+b)*u,'cheddar:ks:'+json.dumps(meta)))
     for a,b,c,k,l in [(21,22,1,92,95),(41,42,2,97,98),(60,61,3,95,97)]:
         corr=image*10+c
         db.execute('INSERT INTO CUPTI_ACTIVITY_KIND_RUNTIME VALUES(?,?,7,?,2)',((base+a)*u,(base+b)*u,corr))
@@ -110,6 +115,16 @@ with tempfile.TemporaryDirectory(prefix='cheddar-nvtx-batch-test-') as temporary
     assert not rows[0]['keys_prepared_by_script'] and not rows[0]['temporary_keys_removed']
     assert all(r['keys_prepared_by_script'] and r['temporary_keys_removed'] for r in rows[1:])
     assert sorted(p.name for p in keys.iterdir())==['resnet20']
+    launch=[sys.executable,str(ROOT/'scripts/run_inference.py'),'--model','resnet20','--build-dir',str(build),
+        '--weights',str(models/'resnet20.bin'),'--cifar',str(cifar),'--key-mode','load','--key-dir',str(keys/'resnet20'),
+        '--count','2','--warmup','1','--time-nvtx','on','--split-hybrid','on','--nsys',str(folder/'nsys'),
+        '--log-format','json','--timing-dir',str(folder/'launcher')]
+    result=subprocess.run(launch,text=True,capture_output=True)
+    assert result.returncode==0,(result.stdout,result.stderr)
+    report=next(json.loads(s[len('NVTX_TIMING '):]) for s in result.stdout.splitlines() if s.startswith('NVTX_TIMING '))
+    assert report['KeyswitchTime']==4 and report['NonKeyswitchTime']==6 and report['total']==10
+    assert report['method']=='nsys_keyswitch_segment_gpu_span_v1' and report['Hybrid']==0
+    assert (folder/'launcher/nvtx-analysis/ks_segments.csv').is_file()
     (models/'vgg11.bin').write_text('BADSQL')
     result=subprocess.run([*base,'--output',str(folder/'bad-sql'),'--models','vgg11','resnet20'],text=True,capture_output=True)
     assert result.returncode==1,result.stderr
@@ -125,7 +140,8 @@ with tempfile.TemporaryDirectory(prefix='cheddar-nvtx-batch-test-') as temporary
     assert result.returncode==0,(result.stdout,result.stderr)
     fused=json.loads((folder/'fused/summary.json').read_text())['models'][0]
     assert fused['split_hybrid']=='off' and fused['nvtx_hybrid_ms']==1
-    assert fused['nvtx_keyswitch_ms']==3 and fused['non_keyswitch_residual_ms']==7
+    assert fused['nvtx_keyswitch_ms'] is None and fused['non_keyswitch_residual_ms'] is None
+    assert fused['nvtx_keyswitch_kernel_diagnostic_ms']==3 and fused['timing_diagnostic_only']
     (models/'vgg11.bin').write_text('NUMERICAL')
     result=subprocess.run([*base,'--output',str(folder/'numerical-warn'),'--models','vgg11','resnet20','--numerical-gate','warn'],text=True,capture_output=True)
     assert result.returncode==1,(result.stdout,result.stderr)

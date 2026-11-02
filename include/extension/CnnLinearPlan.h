@@ -97,9 +97,8 @@ struct LinearPlan {
       return result;
     }
     for(int ky=0;ky<node.kernel;++ky)for(int kx=0;kx<node.kernel;++kx) {
-      int bs=((kx-node.padding)*input.pack+slots)%slots;
-      int gs=((ky-node.padding)*input.pack*32+slots)%slots;
-      auto& message=result[gs][bs];message.resize(slots);
+      int rotation=((32*(ky-node.padding)+kx-node.padding)*input.pack+slots)%slots;
+      auto& message=result[0][rotation];message.resize(slots);
       int count=depthwise?output.channels:Valid(part);
       int inputs=input.channels/node.groups,outputs=output.channels/node.groups;
       for(int r=0;r<count;++r) {
@@ -111,7 +110,7 @@ struct LinearPlan {
             int iy=node.stride*y+ky-node.padding,ix=node.stride*x+kx-node.padding;
             if(iy<0||ix<0||iy>=input.width||ix>=input.width)continue;
             int anchor=(depthwise?0:r*input_slots)+input.Slot(channel,node.stride*y,node.stride*x);
-            message[(anchor+gs)%slots]=value;
+            message[anchor]=value;
           }
         }
       }

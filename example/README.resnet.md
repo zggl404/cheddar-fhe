@@ -67,8 +67,10 @@ the executable reports every image, so exclude the warmup explicitly.
 
 Convolution uses the AE-style repeated-input decomposition, shared spatial
 baby-step rotations, channel Trace reductions, and output-gather masks.
-The fixed spatial split is determined by the input packing. `--baby-step`
-controls only pooling/classification (default 16); no tuning is needed for
+All nine 3x3 offsets remain in the shared baby batch, with giant index zero,
+matching the inspected AE constructor. `--baby-step` controls only
+pooling/classification: automatic defaults use a flat pooling map and 8x8 FC;
+no tuning is needed for
 ordinary model runs. Boot is prepared for 16384 slots. Feature ciphertexts
 use 4096 input slots, then 16384/8192/4096 slots across the three stages,
 with 64 slots after pooling and classification.

@@ -53,6 +53,31 @@ int main(int argc,char** argv) {
   }
   Message message(slots);for(int i=0;i<slots;++i)message[i]=.3*std::sin(i*.013);
   Pt pt;Ct input,fused,split;context->encoder_.Encode(pt,2,param->GetScale(2),message);client.Encrypt(input,pt);
+  // Compare the reordered pair against the former b-MD/b-RS/a-MD/a-RS path
+  // on exactly the same product and evaluation key, including every residue.
+  {
+    param->split_hybrid_=true;
+    Ct product,accum,sequential,reordered;
+    context->Mult(product,input,input);
+    context->MultKeyNoModDown(accum,product,client.GetMultiplicationKey());
+    const int level=param->NPToLevel(product.GetNP());
+    sequential.ModifyNP(param->LevelToNP(level-1));
+    sequential.SetNumSlots(product.GetNumSlots());
+    sequential.SetScale(product.GetScale()/param->GetRescalePrimeProd(level));
+    auto b=sequential.BxView(),a=sequential.AxView();
+    context->mod_switch_handlers_.at(level).ModDownAndRescale(b,accum.BxConstView());
+    context->mod_switch_handlers_.at(level).ModDownAndRescale(a,accum.AxConstView());
+    context->RelinearizeRescale(reordered,product,client.GetMultiplicationKey());
+    Require(sequential.GetNP()==reordered.GetNP()&&sequential.GetScale()==reordered.GetScale(),"reordered MD/RS metadata differs");
+    for(int component=0;component<2;++component) {
+      HostVector<Word> before,after;
+      CopyDeviceToHost(before,component?sequential.ax_:sequential.bx_);
+      CopyDeviceToHost(after,component?reordered.ax_:reordered.bx_);
+      Require(before==after,"reordered MD/RS changed ciphertext words");
+    }
+    Require(!IsKeyswitch(ProfileOp::Automorphism),"independent automorphism must be NonKS");
+    std::cout<<"CHECK reordered_moddown_rescale byte_identical=1\n";
+  }
   auto decode=[&](const Ct& ct){Pt p;std::vector<Complex> out;client.Decrypt(p,ct);context->encoder_.Decode(out,p);return out;};
   auto check=[&](const std::vector<Complex>& expected,const std::string& label){
     Require(fused.GetNP()==split.GetNP(),"split level changed");

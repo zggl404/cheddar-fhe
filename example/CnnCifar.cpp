@@ -186,6 +186,7 @@ class Runner {
     }
     for(size_t i=0;i<count;++i) {
       const auto& node=model_.nodes[i];auto input_state=states.at(node.inputs[0]);Require(bool(input_state),"released CNN input");
+      GpuTraceRange layer_trace("layer",node.name.c_str());
       std::shared_ptr<State> output;
       if(node.operation==Operation::Flatten)output=input_state;  // FC retains the physical CHW slot mapping.
       else if(node.operation==Operation::ReLU) {
@@ -306,7 +307,7 @@ int main(int argc,char** argv) {
     }
     if(client)report.RecordKeys(*client);
     resnet::Model normalization{};normalization.mean=model.mean;normalization.stdev=model.stdev;
-    GpuEventTiming event_timing;
+    GpuEventTiming event_timing(65536,options.run.split_hybrid);
     GpuTraceRange trace_run("cheddar:run",false);
     for(int image=options.start;image<options.start+options.count;++image) {
       GpuTraceImage trace_image(image);event_timing.BeginImage(image);

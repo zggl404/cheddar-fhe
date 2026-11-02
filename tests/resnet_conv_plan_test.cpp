@@ -32,7 +32,10 @@ void Check(int ci,int co,int width,int pack,int stride,int kernel) {
     for(int y=0;y<width;++y)for(int x=0;x<width;++x)
       packed[r*plan.input_slots+input.Slot(c,y,x)]=input.values[input.Flat(c,y,x)]/kRange;
   for(int part=0;part<plan.parts;++part) {
-    auto value=Evaluate(plan.Weights(weights,part),packed);
+    auto map=plan.Weights(weights,part);
+    Require(map.size()==1&&map.begin()->first==0&&map.begin()->second.size()==size_t(kernel*kernel),
+            "AE weights must keep every spatial offset in the shared baby batch");
+    auto value=Evaluate(map,packed);
     Trace(value,1,pack);Trace(value,32,pack);
     Trace(value,1024,ConvPlan::PaddedChannels(ci)/(pack*pack));
     auto gathered=Evaluate(plan.Mask(part),value);
@@ -51,6 +54,12 @@ void Check(int ci,int co,int width,int pack,int stride,int kernel) {
            <<" stride="<<stride<<" parts="<<plan.parts<<" error="<<maximum<<"\n";
 }
 int main() {
+  ConvPlan layer(Tensor(16,32,1),16,3,1,32768);
+  int gather=0;
+  for(int part=0;part<layer.parts;++part)
+    for(int rotation:layer.MaskRotations(part))gather+=rotation!=0;
+  Require(layer.parts==8&&gather==15&&8+4*layer.parts+gather+1==56,
+          "layer1.0.conv1 must match the AE 56 logical KeySwitch layout");
   Check(3,16,32,1,1,3);Check(16,16,32,1,1,3);
   Check(16,32,32,1,2,3);Check(32,32,16,2,1,3);
   Check(32,64,16,2,2,3);Check(64,64,8,4,1,3);

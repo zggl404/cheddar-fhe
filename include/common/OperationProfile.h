@@ -25,7 +25,7 @@ inline constexpr std::array<const char*,kProfileOps> kGpuProfileNames{{
   "cheddar:op:key_correction","cheddar:op:fused_baby","cheddar:op:moddown_rescale","cheddar:op:automorphism_accum",
   "cheddar:op:shared_lift","cheddar:op:shared_lift_common"}};
 inline bool IsHybrid(ProfileOp op) { return op>=ProfileOp::ModDownRescale&&op<=ProfileOp::SharedLift; }
-inline bool IsKeyswitch(ProfileOp op) { return op>ProfileOp::Other&&op<ProfileOp::ModDownRescale; }
+inline bool IsKeyswitch(ProfileOp op) { return op>ProfileOp::Other&&op<ProfileOp::ModDownRescale&&op!=ProfileOp::Automorphism; }
 inline bool ForbiddenInSplit(ProfileOp op) { return IsHybrid(op); }
 
 struct OperationTimes {

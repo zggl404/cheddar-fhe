@@ -52,7 +52,7 @@ def print_timing(name, row, json_output):
 
 def main():
     start = time.perf_counter()
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=__doc__, allow_abbrev=False)
     entry = parser.add_mutually_exclusive_group(required=True)
     entry.add_argument('--model', choices=MODELS)
     entry.add_argument('--binary', type=Path, help='advanced: direct C++ entry, including probes')
@@ -120,12 +120,11 @@ def main():
                 folder.mkdir(parents=True, exist_ok=False)
             path, csv, log = folder/'cpu.json', folder/'events.csv', folder/'worker.log'
             command = [str(binary), *options]
-            if cpu:
-                command += ['--timing-file', str(path)]
+            command += ['--timing-file', str(path)]
             if events:
                 command += ['--event-file', str(csv)]
             if nvtx:
-                command = [nsys, 'profile', '--trace=cuda,nvtx', '--sample=none', '--cpuctxsw=none',
+                command = [nsys, 'profile', '--trace=cuda,nvtx', '--sample=none', '--cpuctxsw=none', '--cuda-event-trace=false',
                            '--force-overwrite=true', '--export=sqlite', '--output='+str(folder/'nvtx'), *command]
             (folder/'command.json').write_text(json.dumps(dict(command=command), indent=2)+'\n')
             result = subprocess.run(command, env=env, text=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
@@ -141,7 +140,7 @@ def main():
             numerical_passed=not warnings and all(r.get('status','PASS')=='PASS' and r.get('numerical_passed',r.get('success',True)) for r in results)
             # Hide internal audits and nsys progress; retain both in the raw log.
             for line in result.stdout.splitlines():
-                if line.startswith(('IMAGE_TIMING ', 'CUDA_EVENT_IMAGE ', 'GPU_TRACE_AUDIT ')) and not verbose:
+                if line.startswith(('IMAGE_TIMING ', 'CUDA_EVENT_IMAGE ', 'CUDA_EVENT_KS_IMAGE ', 'GPU_TRACE_AUDIT ')) and not verbose:
                     continue
                 if nvtx and line.startswith(('Generating ', 'Processing ', 'Generated:', 'Report files:', '[', '    /')):
                     continue
@@ -175,17 +174,43 @@ def main():
                 from analyze_cuda_events import analyze
                 analysis = analyze(csv, log, folder/'event-analysis', args.warmup, args.split_hybrid=='on')
                 mean = analysis['mean_ms']
-                reports['CUDA_EVENT'] = category_report('cuda_event_exclusive_default_stream',
-                    'fhe_default_stream_elapsed', mean['keyswitch'], mean['other'], mean['hybrid'],
-                    args.warmup, len(analysis['measured_images']))
+                if analysis['method'] == 'cuda_event_keyswitch_segments_v1':
+                    wall = json.loads(path.read_text());validate_run(wall)
+                    if [r['image'] for r in wall['images']][args.warmup:] != analysis['measured_images']:
+                        raise ValueError('KS Event and wall timing used different images')
+                    inference = sum(r['inference_ms'] for r in wall['images'][args.warmup:])/len(analysis['measured_images'])
+                    reports['CUDA_EVENT'] = category_report(analysis['method'], 'same_run_inference_wall_with_ks_event_segments',
+                        mean['keyswitch'], inference-mean['keyswitch'], 0, args.warmup, len(analysis['measured_images']))
+                    reports['CUDA_EVENT'].update(profiled_inference_mean_ms=inference,
+                        fused_baby_inclusive_ms=mean['fused_baby_inclusive'], boundary=analysis['boundary'])
+                else:
+                    reports['CUDA_EVENT'] = category_report('cuda_event_exclusive_default_stream',
+                        'fhe_default_stream_elapsed', mean['keyswitch'], mean['other'], mean['hybrid'],
+                        args.warmup, len(analysis['measured_images']))
             if nvtx:
                 from analyze_gpu_activity import analyze
                 analysis = analyze(folder/'nvtx.sqlite', folder/'nvtx-analysis', args.warmup, log, args.split_hybrid=='on')
                 mean = analysis['mean_ms']
-                reports['NVTX'] = category_report('nsys_gpu_activity_launch_correlation',
-                    'fhe_kernel_duration_sum', mean.get('kernel_keyswitch', 0), mean.get('kernel_other', 0),
-                    mean.get('kernel_hybrid', 0), args.warmup, len(analysis['measured_images']))
+                if args.split_hybrid == 'on':
+                    wall = json.loads(path.read_text())
+                    validate_run(wall)
+                    if [r['image'] for r in wall['images']][args.warmup:] != analysis['measured_images']:
+                        raise ValueError('NVTX and wall timing used different images')
+                    inference = sum(r['inference_ms'] for r in wall['images'][args.warmup:])/len(analysis['measured_images'])
+                    key = mean['keyswitch_span']
+                    reports['NVTX'] = category_report(analysis['method'], 'same_run_inference_wall_with_ks_gpu_spans',
+                        key, inference-key, 0, args.warmup, len(analysis['measured_images']))
+                    reports['NVTX'].update(profiled_inference_mean_ms=inference,
+                        fused_baby_inclusive_ms=mean['fused_baby_inclusive'], policy=analysis['policy'],
+                        timestamp_files=analysis['ks_spans']['files'],
+                        kernel_keyswitch_diagnostic_ms=mean.get('kernel_keyswitch', 0))
+                else:
+                    reports['NVTX'] = category_report('legacy_fused_kernel_diagnostics',
+                        'fhe_kernel_duration_sum_diagnostic_only', mean.get('kernel_keyswitch', 0), mean.get('kernel_other', 0),
+                        mean.get('kernel_hybrid', 0), args.warmup, len(analysis['measured_images']))
+                    reports['NVTX']['timing_diagnostic_only'] = True
             for name, report in reports.items():
+                report.setdefault('policy', 'KS timing follows the declared execution stages; Baby preparation stays fused.')
                 report.update(numerical_passed=numerical_passed,diagnostic_only=not numerical_passed)
                 report['enabled_methods'] = dict(cpu=cpu, cuda_event=events, nvtx=nvtx)
                 print_timing(name, report, args.log_format == 'json')

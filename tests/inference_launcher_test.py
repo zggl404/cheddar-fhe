@@ -59,6 +59,7 @@ with tempfile.TemporaryDirectory(prefix='cheddar-launcher-test-') as temporary:
     binary = folder / 'build/example/resnet_cifar';binary.parent.mkdir(parents=True)
     worker = """import json,os,sys,time
 if '--fail' in sys.argv:raise SystemExit(7)
+if '--mode' in sys.argv:assert sys.argv[sys.argv.index('--mode')+1]=='blocks'
 assert os.environ['CHEDDAR_GPU_TRACE']=='0'
 assert os.environ['CHEDDAR_CUDA_EVENT_TRACE']=='0'
 if '--check-defaults' in sys.argv:
@@ -87,6 +88,8 @@ if sys.argv[sys.argv.index('--time-cpu')+1]=='on':
     result=subprocess.run(command,text=True,capture_output=True,env=environment)
     assert result.returncode==0,result.stderr
     assert result.stdout.splitlines()==['PARAM {}','RESULT {"fhe_logits":[1,2],"success":true}']
+    result=subprocess.run([*command,'--mode','blocks'],text=True,capture_output=True)
+    assert result.returncode==0,result.stderr
     for flag in ('--time-cpu','--ks-profile'):
         result=subprocess.run([*command,flag,'on'],text=True,capture_output=True)
         assert result.returncode==0,result.stderr
@@ -100,7 +103,7 @@ if sys.argv[sys.argv.index('--time-cpu')+1]=='on':
     result=subprocess.run([*command,'--time-nvtx','on','--nsys',str(folder/'missing')],text=True,capture_output=True)
     assert result.returncode==2 and 'requires Nsight Systems' in result.stderr
     cnn=binary.with_name('cnn_cifar');cnn.write_text(binary.read_text());cnn.chmod(0o755)
-    for model,extra in (('resnet110',['--check-defaults','1']),('vgg11',[])):
+    for model,extra in (('resnet110',['--check-defaults','1','--mode','blocks']),('vgg11',[])):
         result=subprocess.run([sys.executable,str(root/'scripts/run_inference.py'),'--model',model,'--build-dir',str(folder/'build'),'--cifar',str(folder/'test_batch.bin'),'--count','2',*extra],text=True,capture_output=True)
         assert result.returncode==0 and 'TIMING' not in result.stdout,result.stderr
 

@@ -25,7 +25,10 @@ int main() {
       for(int first=0;first<plan.parts;first+=plan.ChunkParts()) {
         Message partial(65536);int end=std::min(first+plan.ChunkParts(),plan.parts);
         for(int part=end-1;part>=first;--part) {
-          auto value=Apply(plan.Weights(c.model.At("weight"),part),input);
+          auto map=plan.Weights(c.model.At("weight"),part);
+          cheddar::resnet::Require(map.size()==1&&map.begin()->first==0,
+                                  "CNN weights must preserve AE's shared spatial baby layout");
+          auto value=Apply(map,input);
           for(auto [step,count]:plan.Reductions())Trace(value,step,count);
           if(plan.gather)value=Apply(plan.Gather(plan.GatherKey(part)),value);
           if(part==end-1)partial=std::move(value);

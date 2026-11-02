@@ -233,6 +233,8 @@ void BootContext<word>::ModUpToMax(Ct &res, const Ct &input,
   // Charge the common short-base transform to Bootstrap execution (NonKS).
   // Q and P branches reuse the same centered representative.
   max_level_np.num_aux_ = tmp_ax_num_aux;
+  const auto std_unit=MakeKsTraceUnit("sparse_to_dense");
+  KsTraceSegment std_segment(std_unit,"core",false);
   if(sse&&this->param_.split_hybrid_) {
     {
       GpuTraceRange trace("cheddar:source:sparse_to_dense");
@@ -243,6 +245,7 @@ void BootContext<word>::ModUpToMax(Ct &res, const Ct &input,
     DvView<word> q_view(tmp_ax.data(),L*degree,0);
     this->elem_handler_.ModUpToMax(q_view,res.AxConstView());
     this->ntt_handler_.NTT(q_view,q_np,DvConstView<word>(q_view),true);
+    std_segment.Begin();
     {
       GpuTraceRange trace("cheddar:source:sparse_to_dense");
       ProfileScope profile(ProfileOp::ModUp);

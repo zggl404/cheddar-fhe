@@ -1,4 +1,5 @@
 #include "extension/EvalSpecialFFT.h"
+#include "common/GpuTrace.h"
 
 #include <cmath>
 
@@ -331,9 +332,9 @@ void EvalSpecialFFT<word>::EvaluateCtS(ConstContextPtr<word> context, Ct &res,
                                        const EvkMap<word> &evk_map,
                                        bool min_ks) const {
   int num_cts_phases = cts_phases_.size();
-  cts_phases_.at(0).Evaluate(context, res, input, evk_map, min_ks);
-  for (int i = 1; i < num_cts_phases; i++) {
-    cts_phases_.at(i).Evaluate(context, res, res, evk_map, min_ks);
+  for (int i = 0; i < num_cts_phases; i++) {
+    GpuTraceRange path("subpath",("cts.phase"+std::to_string(i)).c_str());
+    cts_phases_.at(i).Evaluate(context, res, i==0?input:res, evk_map, min_ks);
   }
   if (!full_slot_) {
     res.SetNumSlots(num_slots_ * 2);
@@ -346,9 +347,9 @@ void EvalSpecialFFT<word>::EvaluateStC(ConstContextPtr<word> context, Ct &res,
                                        const EvkMap<word> &evk_map,
                                        bool min_ks) const {
   int num_stc_phases = stc_phases_.size();
-  stc_phases_.at(0).Evaluate(context, res, input, evk_map, min_ks);
-  for (int i = 1; i < num_stc_phases; i++) {
-    stc_phases_.at(i).Evaluate(context, res, res, evk_map, min_ks);
+  for (int i = 0; i < num_stc_phases; i++) {
+    GpuTraceRange path("subpath",("stc.phase"+std::to_string(i)).c_str());
+    stc_phases_.at(i).Evaluate(context, res, i==0?input:res, evk_map, min_ks);
   }
 
   Ct tmp;
