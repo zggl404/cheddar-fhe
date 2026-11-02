@@ -41,6 +41,7 @@ def run_phase(args, model, binary, weights, keys, mode, folder, count, encoding,
         '--weights', str(weights), '--cifar', str(args.cifar), '--count', str(count),
         '--relu-range', str({'resnet56': 12, 'resnet110': 24}.get(model, 10)),
         '--encode-mode', encoding, '--key-mode', mode, '--key-dir', str(keys),
+        '--numerical-gate', args.numerical_gate,
         '--split-hybrid', args.split_hybrid, '--log-format', 'json',
         '--time-cpu', 'off', '--time-cuda-event', 'off', '--time-nvtx', 'on' if nvtx else 'off',
         '--timing-file', str(folder/'wall.json')]
@@ -62,6 +63,8 @@ def run_phase(args, model, binary, weights, keys, mode, folder, count, encoding,
     validate_run(report)
     if report.get('timing_detail') != 'coarse' or report.get('ks_profile', False):
         raise ValueError('worker must provide coarse timing without synchronized operation profiling; rebuild examples')
+    if report.get('numerical_gate')!=args.numerical_gate:
+        raise ValueError('worker numerical-gate mode disagrees; rebuild examples')
     if report['encode_mode'] not in ('pre','stream'):
         raise ValueError('worker did not report resolved encoding mode')
     if len(report['images']) != count or [r['image'] for r in report['images']] != list(range(count)):
@@ -79,8 +82,24 @@ def run_phase(args, model, binary, weights, keys, mode, folder, count, encoding,
         raise ValueError('overlapping preparation/inference intervals')
     text = (folder/'stdout.log').read_text()
     images = rows_with_prefix(text, 'RESULT ')
-    if len(images) != count or any(r.get('status') != 'PASS' or len(r.get('fhe_logits', [])) != 10 for r in images):
-        raise ValueError('missing successful full inference results')
+    allowed = ('PASS','NUMERICAL_FAILED') if args.numerical_gate=='warn' else ('PASS',)
+    if len(images) != count or any(r.get('status') not in allowed or len(r.get('fhe_logits', [])) != 10 for r in images):
+        raise ValueError('missing complete inference results or numerical checks failed in strict mode')
+    numerical_passed = all(r['status']=='PASS' and r.get('numerical_passed', True) for r in images)
+    failures = sum(r.get('numerical_failures', 0) for r in images)
+    for row in images:
+        count_failed=row.get('numerical_failures')
+        passed=row['status']=='PASS'
+        if type(count_failed) is not int or count_failed<0 or passed!=(count_failed==0) or row.get('numerical_passed')!=passed or row.get('success')!=passed:
+            raise ValueError('inconsistent numerical result status')
+    if report.get('numerical_failures')!=failures or report.get('numerical_passed')!=numerical_passed:
+        raise ValueError('numerical result census disagrees with wall report')
+    if not numerical_passed and args.numerical_gate!='warn':
+        raise ValueError('numerical checks failed in strict mode')
+    for row in images:
+        for value in row['fhe_logits']:
+            if not isinstance(value,(int,float)) or not math.isfinite(value):
+                raise ValueError('nonfinite inference logits')
     if [r['image'] for r in images]!=list(range(count)):
         raise ValueError('result image census disagrees with wall report')
     for row in images:
@@ -92,10 +111,11 @@ def run_phase(args, model, binary, weights, keys, mode, folder, count, encoding,
         encode_mode=report['encode_mode'], plaintext_reference=report['plaintext_reference'],
         keys_generated=report['keys_generated'], keys_loaded=report['keys_loaded'], key_count=report['key_count'],
         key_identity=report['key_identity'], wrapper_wall_ms=wrapper_ms,
+        numerical_passed=numerical_passed, numerical_failures=failures,
         image_times=report['images'], results=images)
 
 
-def pair_result(baseline, profiled, analysis, warmup):
+def pair_result(baseline, profiled, analysis, warmup, numerical_gate='strict'):
     if baseline['key_identity'] != profiled['key_identity'] or baseline['encode_mode'] != profiled['encode_mode']:
         raise ValueError('paired runs used different keys or encoding modes')
     if baseline['plaintext_reference'] != profiled['plaintext_reference']:
@@ -105,14 +125,18 @@ def pair_result(baseline, profiled, analysis, warmup):
         raise ValueError('NVTX and wall timing used different measured images')
     if any(r['kernel_overlap_ns'] for r in analysis['images']):
         raise ValueError('overlapping kernels: duration sums cannot partition inference wall time')
-    maximum = 0
+    maximum = 0;predictions_match=True
     for before, after in zip(baseline['results'], profiled['results']):
         if before['prediction'] != after['prediction']:
-            raise ValueError('paired predictions differ')
+            predictions_match=False
         for a, b in zip(before['fhe_logits'], after['fhe_logits']):
             maximum = max(maximum, number(abs(a-b), 'logits delta'))
-    if maximum > .01:
+    if not predictions_match and numerical_gate!='warn':
+        raise ValueError('paired predictions differ')
+    if maximum > .01 and numerical_gate!='warn':
         raise ValueError(f'paired logits differ by {maximum}')
+    paired_passed=predictions_match and maximum<=.01
+    numerical_passed=paired_passed and baseline.get('numerical_passed',True) and profiled.get('numerical_passed',True)
     for run in (baseline, profiled):
         run['inference_mean_ms'] = sum(r['inference_ms'] for r in run['image_times'][warmup:])/len(ids)
     mean = analysis['mean_ms']
@@ -120,6 +144,9 @@ def pair_result(baseline, profiled, analysis, warmup):
     residual = profiled['inference_mean_ms']-key
     number(residual, 'Inference minus NVTX Keyswitch')
     return dict(measured_count=len(ids), warmup_count=warmup, max_logits_delta=maximum,
+        numerical_passed=numerical_passed, diagnostic_only=not numerical_passed,
+        paired_numerical_passed=paired_passed, paired_predictions_match=predictions_match,
+        numerical_failures=baseline.get('numerical_failures',0)+profiled.get('numerical_failures',0)+int(not paired_passed),
         nvtx_keyswitch_ms=key, nvtx_hybrid_ms=mean.get('kernel_hybrid', 0),
         nvtx_other_kernel_ms=mean.get('kernel_other', 0), nvtx_kernel_total_ms=mean['kernel_total'],
         non_keyswitch_residual_ms=residual,
@@ -129,7 +156,8 @@ def pair_result(baseline, profiled, analysis, warmup):
 def write_summary(output, summary):
     temporary=output/'summary.json.tmp'
     temporary.write_text(json.dumps(summary, indent=2)+'\n');temporary.replace(output/'summary.json')
-    fields = ['model', 'status', 'keys_prepared_by_script', 'temporary_keys_removed', 'encode_mode', 'plaintext_reference',
+    fields = ['model', 'status', 'numerical_gate', 'numerical_passed', 'numerical_failures', 'diagnostic_only',
+        'keys_prepared_by_script', 'temporary_keys_removed', 'encode_mode', 'plaintext_reference',
         'split_hybrid','measured_count','warmup_count',
         *[f'{kind}_{key}' for kind in ('baseline','profiled') for key in
           ('end_to_end_ms','time_real_ms','time_user_ms','time_sys_ms','key_load_ms','weight_preencode_ms','inference_total_ms','inference_mean_ms','other_prepare_and_teardown_ms')],
@@ -157,6 +185,8 @@ def main():
     parser.add_argument('--count',type=int,default=6)
     parser.add_argument('--warmup',type=int,default=1)
     parser.add_argument('--encode-mode',choices=('auto','pre','stream'),default='auto')
+    parser.add_argument('--numerical-gate',choices=('strict','warn'),default='strict',
+                        help='warn completes finite numerical failures and retains diagnostic timings')
     parser.add_argument('--split-hybrid',choices=('off','on'),default='on',
                         help='split mixed operations (default: on); off uses the original fused path')
     parser.add_argument('--nsys',default='nsys')
@@ -177,12 +207,13 @@ def main():
     key_root=args.key_root or args.output/'.temporary-keys'
     key_root.mkdir(parents=True,exist_ok=True,mode=0o700)
     summary=dict(schema_version=1,status='RUNNING',models=[],count=args.count,warmup=args.warmup,
-        split_hybrid=args.split_hybrid,units='ms',
+        split_hybrid=args.split_hybrid,numerical_gate=args.numerical_gate,units='ms',
         timing_policy='paired coarse baseline and NVTX collection; no CUDA Event or synchronized CPU operation timing',
         key_cache_note='temporary key generation and baseline may warm the page cache; not a cold-disk benchmark')
     started=time.perf_counter()
     for model in args.models:
-        row=dict(model=model,status='FAILED',keys_prepared_by_script=False,temporary_keys_removed=False,split_hybrid=args.split_hybrid)
+        row=dict(model=model,status='FAILED',numerical_gate=args.numerical_gate,
+                 keys_prepared_by_script=False,temporary_keys_removed=False,split_hybrid=args.split_hybrid)
         scratch=None
         try:
             binary=args.build_dir/'example'/('resnet_cifar' if model.startswith('resnet') else 'cnn_cifar')
@@ -198,18 +229,24 @@ def main():
                 row['keys_prepared_by_script']=scratch is not None
                 row['weights_sha256']=hashlib.sha256(weights.read_bytes()).hexdigest()
                 if scratch is not None:
-                    run_phase(args,model,binary,weights,keys,'save',folder/'key-setup',1,args.encode_mode)
+                    row['key_setup']=run_phase(args,model,binary,weights,keys,'save',folder/'key-setup',1,args.encode_mode)
                 baseline=run_phase(args,model,binary,weights,keys,'load',folder/'baseline',args.count,args.encode_mode)
                 profiled=run_phase(args,model,binary,weights,keys,'load',folder/'profiled',args.count,baseline['encode_mode'],True)
                 analysis=analyze(folder/'profiled/nvtx.sqlite',folder/'profiled/analysis',args.warmup,folder/'profiled/stdout.log',args.split_hybrid=='on')
-                row.update(pair_result(baseline,profiled,analysis,args.warmup),baseline=baseline,profiled=profiled,status='PASS')
+                row.update(pair_result(baseline,profiled,analysis,args.warmup,args.numerical_gate),baseline=baseline,profiled=profiled)
+                if 'key_setup' in row:
+                    row['numerical_passed'] &= row['key_setup']['numerical_passed']
+                    row['numerical_failures'] += row['key_setup']['numerical_failures']
+                row['diagnostic_only']=not row['numerical_passed']
+                row['status']='PASS' if row['numerical_passed'] else 'NUMERICAL_FAILED'
         except (OSError,ValueError,KeyError,TypeError,RuntimeError,sqlite3.Error,MemoryError) as error:
             row['error']=str(error)
         finally:
             row['temporary_keys_removed']=scratch is not None and not Path(scratch).exists()
         summary['models'].append(row);summary['batch_wall_ms']=(time.perf_counter()-started)*1000
         if len(summary['models'])==len(args.models):
-            summary['status']='PASS' if all(r['status']=='PASS' for r in summary['models']) else 'FAILED'
+            statuses={r['status'] for r in summary['models']}
+            summary['status']='FAILED' if 'FAILED' in statuses else ('NUMERICAL_FAILED' if 'NUMERICAL_FAILED' in statuses else 'PASS')
         write_summary(args.output,summary)
         print(f'{model}: {row["status"]}'+(': '+row['error'] if 'error' in row else ''),flush=True)
     print('Reports:',args.output/'summary.csv',args.output/'summary.json',flush=True)

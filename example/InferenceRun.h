@@ -29,6 +29,7 @@ struct RunOptions {
   std::string timing_file;
   std::string event_file="cuda-events.csv";
   std::string key_mode="generate",key_directory;
+  std::string numerical_gate="strict";
   bool verbose=false;
   bool ks_profile=false;
   bool cuda_event_timing=false,nvtx_timing=false;
@@ -48,6 +49,9 @@ struct RunOptions {
     } else if(key=="--split-hybrid") {
       if(value!="off"&&value!="on")throw std::runtime_error("split-hybrid must be off|on");
       split_hybrid=value=="on";
+    } else if(key=="--numerical-gate") {
+      if(value!="strict"&&value!="warn")throw std::runtime_error("numerical-gate must be strict|warn");
+      numerical_gate=value;
     } else if(key=="--key-mode") {
       if(value!="generate"&&value!="save"&&value!="load")throw std::runtime_error("key-mode must be generate|save|load");
       key_mode=value;
@@ -79,6 +83,31 @@ struct RunOptions {
   }
 };
 
+struct NumericalStatus {
+  int image=-1;
+  uint64_t failures=0;
+  void Reset(int index) {image=index;failures=0;}
+  bool Passed() const {return failures==0;}
+  void Require(bool ok,const RunOptions& options,const std::string& message) {
+    if(ok)return;
+    const auto detail=message+" image="+std::to_string(image);
+    if(options.numerical_gate=="strict")throw std::runtime_error(detail);
+    ++failures;std::cerr<<"NUMERICAL_WARNING "<<detail<<'\n'<<std::flush;
+  }
+  void Check(const RunOptions& options,const std::string& name,double error,double imaginary) {
+    if(!std::isfinite(error)||!std::isfinite(imaginary))throw std::runtime_error("nonfinite numerical metric at "+name);
+    if(error<=1e-2&&imaginary<=1e-2)return;
+    std::ostringstream message;message<<std::setprecision(17)<<"ciphertext numerical gate failed at "<<name
+      <<" max_abs_error="<<error<<" max_imag="<<imaginary<<" threshold=0.01"
+      <<" plaintext_reference="<<(kPlaintextReference?"true":"false");
+    Require(false,options,message.str());
+  }
+  void WriteFields(std::ostream& out) const {
+    out<<"\"status\":\""<<(Passed()?"PASS":"NUMERICAL_FAILED")<<"\",\"success\":"<<(Passed()?"true":"false")
+       <<",\"numerical_passed\":"<<(Passed()?"true":"false")<<",\"numerical_failures\":"<<failures;
+  }
+};
+
 // First local in main, so model/context destruction is included in the total.
 class RunReport {
  public:
@@ -86,12 +115,14 @@ class RunReport {
   int64_t boot_ns=0;
   int64_t key_load_ns=0,preencode_ns=0;
   uint64_t key_count=0,keys_generated=0,keys_loaded=0;
+  uint64_t numerical_failures=0;
   std::string key_identity,encoding="none";
   InferenceTimes inference;
   std::vector<std::pair<int,InferenceTimes>> images;
   bool complete=false;
-  void AddImage(int image,const InferenceTimes& times) {
+  void AddImage(int image,const InferenceTimes& times,const NumericalStatus& numerical={}) {
     if(!options.WallTiming())return;
+    numerical_failures+=numerical.failures;
     inference+=times;images.emplace_back(image,times);
     if(options.Json()&&options.ks_profile) {
       std::cout<<"IMAGE_TIMING {\"image\":"<<image<<",\"plaintext_reference\":"
@@ -124,7 +155,8 @@ class RunReport {
           <<",\"model_prepare_ms\":"<<InferenceMilliseconds(model)<<",\"boot_prepare_ms\":"<<InferenceMilliseconds(boot_ns)
           <<",\"inference_ms\":"<<InferenceMilliseconds(inference.total_ns)<<",\"fhe_eval_ms\":"<<InferenceMilliseconds(inference.Fhe())
           <<",\"KeyswitchTime\":"<<InferenceMilliseconds(key)<<",\"NonKeyswitchTime\":"<<InferenceMilliseconds(inference.Fhe()-key-hybrid)
-          <<",\"Hybrid\":"<<InferenceMilliseconds(hybrid)<<"}\n";
+          <<",\"Hybrid\":"<<InferenceMilliseconds(hybrid)
+          <<",\"numerical_passed\":"<<(numerical_failures?"false":"true")<<",\"numerical_failures\":"<<numerical_failures<<"}\n";
         return;
       }
       std::ofstream out(options.timing_file);
@@ -132,6 +164,8 @@ class RunReport {
       out<<",\"model_prepare_ms\":"<<InferenceMilliseconds(model)<<",\"boot_prepare_ms\":"<<InferenceMilliseconds(boot_ns)
          <<",\"total_ms\":"<<InferenceMilliseconds(total)
          <<",\"timing_detail\":\""<<(options.CoarseTiming()?"coarse":"synchronized_scopes")<<"\""
+         <<",\"numerical_gate\":\""<<options.numerical_gate<<"\",\"numerical_passed\":"<<(numerical_failures?"false":"true")
+         <<",\"numerical_failures\":"<<numerical_failures
          <<",\"key_load_ms\":"<<InferenceMilliseconds(key_load_ns)<<",\"weight_preencode_ms\":"<<InferenceMilliseconds(preencode_ns)
          <<",\"key_mode\":\""<<options.key_mode<<"\",\"encode_mode\":\""<<encoding<<"\",\"key_identity\":\""<<key_identity
          <<"\",\"key_count\":"<<key_count<<",\"keys_generated\":"<<keys_generated<<",\"keys_loaded\":"<<keys_loaded<<",\"images\":[";
@@ -150,7 +184,7 @@ class RunReport {
 
 inline void PrintInference(const std::string& model,int image,int label,int prediction,
                            const std::vector<double>& plain,const std::vector<double>& cipher,
-                           double max_layer_error,uint64_t boots) {
+                           double max_layer_error,uint64_t boots,const NumericalStatus& numerical={}) {
   std::ostringstream out;out<<std::fixed<<std::setprecision(9);
   out<<"\n"<<model<<" image="<<image<<" label="<<label<<" prediction="<<prediction<<"\n";
   if(kPlaintextReference&&plain.size()==10&&cipher.size()==10) {
@@ -168,21 +202,22 @@ inline void PrintInference(const std::string& model,int image,int label,int pred
     for(size_t i=0;i<cipher.size();++i)out<<"  Class "<<i<<" decrypted FHE="<<cipher[i]<<'\n';
     out<<"  Boot calls="<<boots<<'\n';
   }
+  out<<"  Success: "<<(numerical.Passed()?"true":"false")<<", numerical_failures="<<numerical.failures<<'\n';
   std::cout<<out.str()<<std::flush;
 }
 
 inline void PrintCompactInference(const RunOptions& options,const std::string& model,int image,int label,int prediction,
-                                  const std::vector<double>& logits) {
+                                  const std::vector<double>& logits,const NumericalStatus& numerical={}) {
   std::cout<<std::setprecision(12);
   if(options.Json()) {
     std::cout<<"RESULT {\"model\":\""<<model<<"\",\"image\":"<<image<<",\"label\":"<<label
       <<",\"prediction\":"<<prediction<<",\"fhe_logits\":[";
     for(size_t i=0;i<logits.size();++i)std::cout<<(i?",":"")<<logits[i];
-    std::cout<<"],\"status\":\"PASS\",\"success\":true}\n";
+    std::cout<<"],";numerical.WriteFields(std::cout);std::cout<<"}\n";
   } else {
     std::cout<<"Logits image="<<image<<" label="<<label<<" prediction="<<prediction<<": [";
     for(size_t i=0;i<logits.size();++i)std::cout<<(i?", ":"")<<logits[i];
-    std::cout<<"]\nSuccess: true\n";
+    std::cout<<"]\nSuccess: "<<(numerical.Passed()?"true":"false")<<'\n';
   }
   std::cout<<std::flush;
 }
@@ -193,6 +228,7 @@ inline void PrintRunParameters(const RunOptions& options) {
     <<",\"time_nvtx\":"<<(options.nvtx_timing?"true":"false")
     <<",\"split_hybrid\":"<<(options.split_hybrid?"true":"false")
     <<",\"plaintext_reference\":"<<(kPlaintextReference?"true":"false")
+    <<",\"numerical_gate\":\""<<options.numerical_gate<<"\""
     <<",\"key_mode\":\""<<options.key_mode<<"\",\"encode_mode\":\""<<options.encoding<<"\"}\n"<<std::flush;
 }
 

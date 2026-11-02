@@ -18,8 +18,11 @@ WORKER=r'''
 import json,sys
 from pathlib import Path
 args=dict(zip(sys.argv[1::2],sys.argv[2::2]))
-if Path(args['--weights']).read_text()=='FAIL':raise SystemExit(7)
+kind=Path(args['--weights']).read_text()
+if kind=='FAIL':raise SystemExit(7)
 mode=args['--key-mode'];keys=Path(args['--key-dir'])
+failed=kind=='NUMERICAL' or (kind=='SETUP_NUMERICAL' and mode=='save')
+if failed and args['--numerical-gate']=='strict':raise SystemExit(1)
 if mode=='save':
     assert not keys.exists();keys.mkdir();(keys/'manifest.txt').write_text('mock bundle')
 else:assert (keys/'manifest.txt').is_file()
@@ -29,12 +32,18 @@ for image in range(count):
     rows.append(dict(image=image,schema_version=2,inference_ms=10.,fhe_eval_ms=0.,input_ms=0.,runtime_weight_prepare_ms=0.,
         linear_ms=0.,bootstrap_ms=0.,activation_ms=0.,graph_ops_ms=0.,reference_ms=0.,validation_output_ms=0.,dispatch_ms=10.,
         ks_profile=False,split_hybrid=args['--split-hybrid']=='on',plaintext_reference=False))
-    print('RESULT '+json.dumps(dict(status='PASS',model=Path(args['--weights']).stem,image=image,prediction=0,fhe_logits=[1.]*10)))
+    logits=[1.]*10
+    if kind=='NONFINITE':logits[0]=float('nan')
+    print('RESULT '+json.dumps(dict(status='NUMERICAL_FAILED' if failed else 'PASS',success=not failed,
+        numerical_passed=not failed,numerical_failures=int(failed),
+        model=Path(args['--weights']).stem,image=image,prediction=0,fhe_logits=logits)))
+    if failed:print('NUMERICAL_WARNING test.relu image='+str(image)+' max_abs_error=0.02 threshold=0.01',file=sys.stderr)
     if args['--time-nvtx']=='on':print('GPU_TRACE_AUDIT '+json.dumps(dict(image=image,ranges=5)))
 report=dict(rows[0]);report.pop('image');report.update(inference_ms=10.*count,dispatch_ms=10.*count,
     images=rows,total_ms=40.+10*count,model_prepare_ms=35.,boot_prepare_ms=5.,timing_detail='coarse',
     key_mode=mode,key_load_ms=4. if mode=='load' else 0.,weight_preencode_ms=8. if pre else 0.,
     encode_mode='pre' if pre else 'stream',keys_generated=5 if mode=='save' else 0,
+    numerical_gate=args['--numerical-gate'],numerical_passed=not failed,numerical_failures=count*int(failed),
     keys_loaded=5 if mode=='load' else 0,key_count=5,key_identity='same-test-key-identity')
 Path(args['--timing-file']).write_text(json.dumps(report))
 '''
@@ -117,6 +126,39 @@ with tempfile.TemporaryDirectory(prefix='cheddar-nvtx-batch-test-') as temporary
     fused=json.loads((folder/'fused/summary.json').read_text())['models'][0]
     assert fused['split_hybrid']=='off' and fused['nvtx_hybrid_ms']==1
     assert fused['nvtx_keyswitch_ms']==3 and fused['non_keyswitch_residual_ms']==7
+    (models/'vgg11.bin').write_text('NUMERICAL')
+    result=subprocess.run([*base,'--output',str(folder/'numerical-warn'),'--models','vgg11','resnet20','--numerical-gate','warn'],text=True,capture_output=True)
+    assert result.returncode==1,(result.stdout,result.stderr)
+    warned=json.loads((folder/'numerical-warn/summary.json').read_text())
+    assert warned['status']=='NUMERICAL_FAILED'
+    first,second=warned['models']
+    assert first['status']=='NUMERICAL_FAILED' and second['status']=='PASS'
+    assert first['diagnostic_only'] and not first['numerical_passed'] and first['numerical_failures']==5
+    assert first['temporary_keys_removed'] and len(first['profiled']['results'])==2
+    assert first['profiled']['inference_total_ms']==20 and first['nvtx_keyswitch_ms']==4
+    assert 'NUMERICAL_WARNING' in (folder/'numerical-warn/vgg11/profiled/stderr.log').read_text()
+    result=subprocess.run([*base,'--output',str(folder/'numerical-strict'),'--models','vgg11','resnet20'],text=True,capture_output=True)
+    assert result.returncode==1
+    strict=json.loads((folder/'numerical-strict/summary.json').read_text())['models']
+    assert [r['status'] for r in strict]==['FAILED','PASS'] and strict[0]['temporary_keys_removed']
+    (models/'vgg11.bin').write_text('SETUP_NUMERICAL')
+    result=subprocess.run([*base,'--output',str(folder/'setup-warn'),'--models','vgg11','--numerical-gate','warn'],text=True,capture_output=True)
+    assert result.returncode==1,result.stderr
+    setup=json.loads((folder/'setup-warn/summary.json').read_text())['models'][0]
+    assert setup['status']=='NUMERICAL_FAILED' and setup['numerical_failures']==1
+    assert setup['baseline']['numerical_passed'] and setup['profiled']['numerical_passed']
+    (models/'vgg11.bin').write_text('NONFINITE')
+    result=subprocess.run([*base,'--output',str(folder/'nonfinite'),'--models','vgg11','--numerical-gate','warn'],text=True,capture_output=True)
+    assert result.returncode==1
+    fatal=json.loads((folder/'nonfinite/summary.json').read_text())['models'][0]
+    assert fatal['status']=='FAILED' and 'nonfinite' in fatal['error'] and fatal['temporary_keys_removed']
+    analysis=json.loads((folder/'all/resnet20/profiled/analysis/summary.json').read_text())
+    bad=copy.deepcopy(rows[0]['profiled']);bad['results'][1]['fhe_logits'][0]+=.02;bad['results'][1]['prediction']=1
+    try:pair_result(copy.deepcopy(rows[0]['baseline']),copy.deepcopy(bad),analysis,1)
+    except ValueError as error:assert 'paired predictions' in str(error)
+    else:raise AssertionError('strict mode accepted paired numerical mismatch')
+    mismatch=pair_result(copy.deepcopy(rows[0]['baseline']),bad,analysis,1,'warn')
+    assert mismatch['diagnostic_only'] and not mismatch['paired_numerical_passed'] and not mismatch['paired_predictions_match']
     (models/'vgg11.bin').write_text('FAIL')
     result=subprocess.run([*base,'--output',str(folder/'failed'),'--models','vgg11','resnet20'],text=True,capture_output=True)
     assert result.returncode==1

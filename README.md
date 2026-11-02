@@ -125,7 +125,14 @@ NVTX 方式需要 Nsight Systems，GPU 方式需要先启用对应 CMake 功能�
 十个模型的开关、精度、时间和显存验证见[48 GB 实测报告](docs/keyswitch-kms-gpu48.md)。
 
 默认显示参数、FHE Logits 和 Success。开启计时后输出相应方法的报告；
-开启计时并加 `--verbose 1` 可查看详细诊断。数值校验仍然执行，失败返回非零状态。
+开启计时并加 `--verbose 1` 可查看详细诊断。默认 strict 模式下数值校验失败返回非零状态。
+
+数值门槛默认 `--numerical-gate strict`，逐层实部误差或虚部残差超过 `0.01` 时停止。
+需要先跑完整个网络以收集诊断数据时，使用 `--numerical-gate warn`：保留同一门槛，
+超标打印 `NUMERICAL_WARNING`，包含图片、层名及实际误差，继续后续层和图片。
+最终 top-1 对照不一致也记录警告；对应结果为 `status=NUMERICAL_FAILED`、`success=false`，不会标记为通过。
+NaN/Inf、CUDA 错误、结构/密钥错误和明文激活校准范围越界等其他错误仍然终止。
+两种模式都适用于 ResNet/CNN、直接运行 C++ 及 `run_inference.py`；修改后需重新编译两个推理入口。
 
 明文参考可通过 CMake 关闭，适用于 ResNet 和 CNN 入口，默认 `ON`：
 
@@ -198,6 +205,15 @@ python scripts/benchmark_nvtx.py \
 
 输出 `summary.csv`、`summary.json` 和每模型的命令、日志、墙钟报告、Nsight SQLite 与分类明细。
 单个模型失败会记录错误并继续后续模型，最终有失败则返回非零。
+
+批处理也支持 `--numerical-gate warn`，例如在上面的命令末尾追加该选项，并使用新的输出目录。
+即使密钥准备后的验证推理或基线发生有限数值超标，也会继续后续图片和 NVTX 采集，保存完整时间及 Logits。
+汇总增加 `numerical_gate`、`numerical_passed`、`numerical_failures` 和 `diagnostic_only`；
+`numerical_failures` 为检查失败次数，包含密钥验证、预热图片及配对不一致事件，并非失败图片数。
+未通过逐层校验、top-1 对照或两次运行数值一致性的模型标记 `NUMERICAL_FAILED`、`diagnostic_only=true`。
+这些时间仅供诊断。批处理在全部模型处理完成后仍返回非零，表示有数值未通过；
+单独运行的 C++/`run_inference.py` 在 warn 模式完成时返回 0，是否数值通过须看结果字段。
+原有的密钥加载、分类完整性和 kernel 重叠检查保持严格。
 
 | 报告字段 | 口径 |
 |---|---|

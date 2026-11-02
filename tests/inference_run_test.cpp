@@ -2,6 +2,7 @@
 #undef NDEBUG
 #endif
 #include <cassert>
+#include <limits>
 #include <sstream>
 #include <thread>
 #include "../example/InferenceRun.h"
@@ -31,6 +32,7 @@ int main(int argc,char** argv) {
     timer.SetWallOnly(report.options.CoarseTiming());
     timer.SetProfiling(report.options.ks_profile);timer.SetSplitHybrid(report.options.split_hybrid);
     for(int image=0;image<count;++image) {
+      NumericalStatus numerical;numerical.Reset(image);
       if(report.options.CoarseTiming())Sync();
       timer.Reset();auto begin=InferenceClock::now();
       timer.Cpu(InferencePhase::Input,Work);
@@ -41,9 +43,11 @@ int main(int argc,char** argv) {
       });
       timer.Gpu(InferencePhase::Activation,Work);
       PlaintextReference(timer,Work);
-      PrintCompactInference(report.options,"test",image,0,0,std::vector<double>(10,1));
+      // Inject a finite precision failure to exercise warn-mode launcher output.
+      if(report.options.numerical_gate=="warn")numerical.Check(report.options,"test.relu",.02,.001);
+      PrintCompactInference(report.options,"test",image,0,0,std::vector<double>(10,1),numerical);
       if(report.options.CoarseTiming())Sync();
-      report.AddImage(image,timer.Finish(begin));
+      report.AddImage(image,timer.Finish(begin),numerical);
     }
     if(report.options.CoarseTiming())assert(sync_calls==2+2*count);
     report.complete=true;return 0;
@@ -51,6 +55,28 @@ int main(int argc,char** argv) {
   RunOptions options;
   assert(!options.Json()&&!options.verbose&&options.encoding=="auto");
   assert(!options.TimingEnabled());
+  assert(options.numerical_gate=="strict");
+  bool bad_gate=false;try {options.Parse("--numerical-gate","off");}catch(const std::runtime_error&){bad_gate=true;}assert(bad_gate);
+  NumericalStatus numerical;numerical.Reset(7);
+  numerical.Check(options,"test.boundary",.01,.01);assert(numerical.Passed());
+  bad_gate=false;try {numerical.Check(options,"test.strict",.02,.001);}catch(const std::runtime_error& error){
+    const std::string message=error.what();bad_gate=message.find("max_abs_error=")!=std::string::npos&&message.find("image=7")!=std::string::npos;
+  }assert(bad_gate);
+  options.Parse("--numerical-gate","warn");
+  std::ostringstream warnings;auto* saved_errors=std::cerr.rdbuf(warnings.rdbuf());
+  numerical.Check(options,"test.real",.02,.001);numerical.Check(options,"test.imag",0,.03);
+  numerical.Require(false,options,"test top1 mismatch");
+  std::cerr.rdbuf(saved_errors);
+  assert(!numerical.Passed()&&numerical.failures==3&&warnings.str().find("NUMERICAL_WARNING")!=std::string::npos);
+  bad_gate=false;try {numerical.Check(options,"test.nan",std::numeric_limits<double>::quiet_NaN(),0);}catch(const std::runtime_error&){bad_gate=true;}assert(bad_gate);
+  bad_gate=false;try {numerical.Check(options,"test.inf",0,std::numeric_limits<double>::infinity());}catch(const std::runtime_error&){bad_gate=true;}assert(bad_gate);
+  std::ostringstream failed_output;auto* saved_output=std::cout.rdbuf(failed_output.rdbuf());
+  PrintCompactInference(options,"test",7,0,0,std::vector<double>(10,1),numerical);
+  options.Parse("--log-format","json");PrintCompactInference(options,"test",7,0,0,std::vector<double>(10,1),numerical);
+  std::cout.rdbuf(saved_output);
+  assert(failed_output.str().find("Success: false")!=std::string::npos);
+  assert(failed_output.str().find("\"status\":\"NUMERICAL_FAILED\"")!=std::string::npos&&failed_output.str().find("\"success\":false")!=std::string::npos);
+  numerical.Reset(8);assert(numerical.Passed());options.Parse("--numerical-gate","strict");options.Parse("--log-format","human");
   options.ConfigureTiming();
   assert(std::string(std::getenv("CHEDDAR_GPU_TRACE"))=="0");
   assert(std::string(std::getenv("CHEDDAR_CUDA_EVENT_TRACE"))=="0");

@@ -123,6 +123,7 @@ class Runner {
   Tensor shape{3,32},reference{1,1},exact{1,1};
   Ct ciphertext;
   double max_error=0;
+  example::NumericalStatus numerical;
   double final_poly_error=0,final_relu_error=0;
   std::vector<double> logits;
   uint64_t fhe_encode_calls=0;
@@ -227,7 +228,7 @@ class Runner {
                <<" level="<<context_->param_.NPToLevel(ciphertext.GetNP())
                <<" log_scale="<<std::log2(ciphertext.GetScale())<<" max_abs_error="<<error
                <<" max_imag="<<imaginary<<" polynomial_vs_relu="<<approximation<<std::endl;
-      Require(error<=1e-2 && imaginary<=1e-2,"ciphertext numerical gate failed at "+name);
+      numerical.Check(run_,name,error,imaginary);
     });
   }
   void Convolution(const std::string& prefix,int stride) {
@@ -312,7 +313,7 @@ class Runner {
       for(int i=0;i<10;++i)std::cout<<(i?",":"")<<out[i].real()*range_;
       std::cout<<"]"<<std::endl;
     }
-    if constexpr(example::kPlaintextReference)Require(prediction==Top1(reference),"FHE and polynomial reference top1 mismatch");
+    if constexpr(example::kPlaintextReference)numerical.Require(prediction==Top1(reference),run_,"FHE and polynomial reference top1 mismatch");
     return prediction;
   }
  private:
@@ -473,6 +474,7 @@ int main(int argc,char** argv) {
       int label;Tensor input(3,32);runner.timing.Cpu(InferencePhase::Input,[&]{input=ReadCifar(options.cifar,image,model,label);});
       const uint64_t previous_boots=runner.relu?runner.relu->BootCount():0;
       runner.max_error=0;
+      runner.numerical.Reset(image);
       if(options.mode=="projection") {
         const int stage=options.probe_stage;
         Tensor probe(stage==2?16:32,stage==2?32:16,stage==2?1:2);
@@ -495,9 +497,10 @@ int main(int argc,char** argv) {
       auto stats=Encoder<Word>::GetEncodingStats();
       size_t free=0,total=0;cudaMemGetInfo(&free,&total);
       if(!options.run.TimingEnabled()) {
-        example::PrintCompactInference(options.run,"ResNet"+std::to_string(model.depth),image,label,prediction,runner.logits);
+        example::PrintCompactInference(options.run,"ResNet"+std::to_string(model.depth),image,label,prediction,runner.logits,runner.numerical);
       } else if(options.run.Json()) {
-      std::cout<<"RESULT {\"status\":\"PASS\",\"mode\":\""<<options.mode<<"\",\"depth\":"<<model.depth
+      std::cout<<"RESULT {";runner.numerical.WriteFields(std::cout);
+      std::cout<<",\"mode\":\""<<options.mode<<"\",\"depth\":"<<model.depth
         <<",\"image\":"<<image<<",\"label\":"<<label<<",\"prediction\":"<<prediction
         <<",\"relu_range\":"<<options.relu_range
         <<",\"encode_mode\":\""<<(runner.preencoded?"pre":"stream")<<"\""
@@ -530,17 +533,17 @@ int main(int argc,char** argv) {
       }
       std::cout<<"}"<<std::endl;
       } else example::PrintInference("ResNet"+std::to_string(model.depth),image,label,prediction,
-          options.mode=="full"?runner.exact.values:std::vector<double>{},runner.logits,runner.max_error,runner.relu?runner.relu->BootCount()-previous_boots:0);
+          options.mode=="full"?runner.exact.values:std::vector<double>{},runner.logits,runner.max_error,runner.relu?runner.relu->BootCount()-previous_boots:0,runner.numerical);
       });
       }
       if(options.run.CoarseTiming())Sync();
-      report.AddImage(image,runner.timing.Finish(inference_begin));
+      report.AddImage(image,runner.timing.Finish(inference_begin),runner.numerical);
       event_timing.FinishImage();
       if(GpuTraceEnabled())std::cout<<"GPU_TRACE_AUDIT {\"image\":"<<image
         <<",\"ranges\":"<<trace_image.RangeCount()<<"}\n"<<std::flush;
     }
     if(options.mode=="encode"||options.mode=="boot"||options.mode=="relu")
-      report.AddImage(-1,runner.timing.Finish(probe_begin));
+      report.AddImage(-1,runner.timing.Finish(probe_begin),runner.numerical);
     auto stats=Encoder<Word>::GetEncodingStats();
     Require(stats.cpu_attempts==0 && stats.gpu_vectors>0,"GPU-only encoding audit failed");
     if(options.run.TimingEnabled()&&(options.run.Json()||options.run.verbose))std::cout<<"GPU_ONLY_PASS vectors="<<stats.gpu_vectors<<" constants="<<stats.gpu_constants

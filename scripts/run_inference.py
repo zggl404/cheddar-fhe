@@ -42,6 +42,7 @@ def print_timing(name, row, json_output):
         print(name + '_TIMING ' + json.dumps(row, separators=(',', ':')))
     else:
         print(f'\n{name} timing (ms, {row["scope"]}; mean of {row["measured_count"]} images)')
+        if not row.get('numerical_passed',True):print('  Numerical checks failed; timings are diagnostic only')
         if name == 'CPU':
             for key in ('end_to_end_ms', 'prepare_ms', 'model_prepare_ms', 'boot_prepare_ms', 'inference_ms'):
                 print(f'  {key:24}: {row[key]:.3f}')
@@ -64,6 +65,8 @@ def main():
     parser.add_argument('--key-mode', choices=('generate', 'save', 'load'), default='generate')
     parser.add_argument('--key-dir', type=Path)
     parser.add_argument('--split-hybrid', choices=('off', 'on'), default='off')
+    parser.add_argument('--numerical-gate', choices=('strict','warn'), default='strict',
+                        help='warn continues finite precision failures and marks results unsuccessful')
     parser.add_argument('--time-cpu', '--ks-profile', dest='time_cpu', choices=('off', 'on'), default='off',
                         help='synchronized CPU wall timing; --ks-profile is a compatibility alias')
     parser.add_argument('--time-cuda-event', choices=('off', 'on'), default='off')
@@ -98,7 +101,8 @@ def main():
         options += ['--relu-range', {'resnet56': '12', 'resnet110': '24'}.get(args.model, '10')]
     options += ['--count', str(args.count), '--encode-mode', args.encode_mode, '--log-format', args.log_format,
                 '--time-cpu', args.time_cpu, '--time-cuda-event', args.time_cuda_event,
-                '--time-nvtx', args.time_nvtx, '--split-hybrid', args.split_hybrid]
+                '--time-nvtx', args.time_nvtx, '--split-hybrid', args.split_hybrid,
+                '--numerical-gate', args.numerical_gate]
     nsys = shutil.which(args.nsys) if nvtx else None
     if nvtx and not nsys:
         parser.error('--time-nvtx on requires Nsight Systems; supply --nsys /path/to/nsys')
@@ -131,6 +135,10 @@ def main():
                 print(result.stdout, end='')
                 print(result.stderr, end='', file=sys.stderr)
                 return result.returncode if result.returncode > 0 else 128-result.returncode
+            warnings=[line for line in result.stderr.splitlines() if line.startswith('NUMERICAL_WARNING ')]
+            for warning in warnings:print(warning,file=sys.stderr)
+            results=[json.loads(line[len('RESULT '):]) for line in result.stdout.splitlines() if line.startswith('RESULT ')]
+            numerical_passed=not warnings and all(r.get('status','PASS')=='PASS' and r.get('numerical_passed',r.get('success',True)) for r in results)
             # Hide internal audits and nsys progress; retain both in the raw log.
             for line in result.stdout.splitlines():
                 if line.startswith(('IMAGE_TIMING ', 'CUDA_EVENT_IMAGE ', 'GPU_TRACE_AUDIT ')) and not verbose:
@@ -178,6 +186,7 @@ def main():
                     'fhe_kernel_duration_sum', mean.get('kernel_keyswitch', 0), mean.get('kernel_other', 0),
                     mean.get('kernel_hybrid', 0), args.warmup, len(analysis['measured_images']))
             for name, report in reports.items():
+                report.update(numerical_passed=numerical_passed,diagnostic_only=not numerical_passed)
                 report['enabled_methods'] = dict(cpu=cpu, cuda_event=events, nvtx=nvtx)
                 print_timing(name, report, args.log_format == 'json')
             (folder/'summary.json').write_text(json.dumps(reports, indent=2)+'\n')

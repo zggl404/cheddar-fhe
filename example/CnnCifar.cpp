@@ -62,6 +62,7 @@ class Runner {
       :o_(options),model_(model),context_(std::move(context)),client_(client){}
   InferenceTiming timing{Sync};
   double max_error=0,max_bound=0;
+  example::NumericalStatus numerical;
   uint64_t fhe_encode_calls=0;
   std::unique_ptr<resnet::EvalReLU> relu;
   void Keys(const EvkRequest& requested) {
@@ -103,7 +104,7 @@ class Runner {
       max_error=std::max({max_error,real,imaginary});
       if(o_.run.TimingEnabled()&&o_.run.verbose&&example::kPlaintextReference)std::cout<<"CHECK name="<<name<<" level="<<context_->param_.NPToLevel(state.ciphertext.GetNP())
                <<" real_error="<<real<<" imaginary_error="<<imaginary<<std::endl;
-      Require(real<=1e-2&&imaginary<=1e-2,"CNN numerical gate failed at "+name);
+      numerical.Check(o_.run,name,real,imaginary);
     });
   }
   bool preencoded=false;
@@ -311,6 +312,7 @@ int main(int argc,char** argv) {
       GpuTraceImage trace_image(image);event_timing.BeginImage(image);
       if(options.run.CoarseTiming()&&context)Sync();
       runner.timing.Reset();const auto inference_begin=Clock::now();
+      runner.numerical.Reset(image);
       {
       int label;Tensor input(3,32);runner.timing.Cpu(InferencePhase::Input,[&]{input=resnet::ReadCifar(options.cifar,image,normalization,label);});
       const auto before_boots=runner.relu?runner.relu->BootCount():0;
@@ -333,14 +335,15 @@ int main(int argc,char** argv) {
               relu_error=std::max(relu_error,std::abs(decoded[c].real()*options.range-output->exact.values[c]));
             }
           }
-          if constexpr(example::kPlaintextReference)Require(prediction==resnet::Top1(output->polynomial)&&prediction==resnet::Top1(output->exact),"CNN reference top1 mismatch");
+          if constexpr(example::kPlaintextReference)runner.numerical.Require(prediction==resnet::Top1(output->polynomial)&&prediction==resnet::Top1(output->exact),options.run,"CNN reference top1 mismatch");
         }
       }
       size_t free_bytes=0,total_bytes=0;if(context)Require(cudaMemGetInfo(&free_bytes,&total_bytes)==cudaSuccess,"memory query failed");
       if(!options.run.TimingEnabled()) {
-        example::PrintCompactInference(options.run,model.family,image,label,prediction,fhe_logits);
+        example::PrintCompactInference(options.run,model.family,image,label,prediction,fhe_logits,runner.numerical);
       } else if(options.run.Json()) {
-      std::cout<<"RESULT {\"status\":\"PASS\",\"family\":\""<<model.family<<"\",\"mode\":\""<<options.mode
+      std::cout<<"RESULT {";runner.numerical.WriteFields(std::cout);
+      std::cout<<",\"family\":\""<<model.family<<"\",\"mode\":\""<<options.mode
                <<"\",\"image\":"<<image<<",\"label\":"<<label<<",\"prediction\":"<<prediction
                <<",\"plaintext_reference\":"<<(example::kPlaintextReference?"true":"false");
       if constexpr(example::kPlaintextReference)std::cout<<",\"polynomial_top1\":"<<(full?resnet::Top1(output->polynomial):-1)<<",\"relu_top1\":"<<(full?resnet::Top1(output->exact):-1);
@@ -361,13 +364,13 @@ int main(int argc,char** argv) {
       std::cout<<",\"fhe_logits\":[";for(size_t c=0;c<fhe_logits.size();++c)std::cout<<(c?",":"")<<fhe_logits[c];
       std::cout<<"]}"<<std::endl;
       } else example::PrintInference(model.family,image,label,prediction,
-          full?output->exact.values:std::vector<double>{},fhe_logits,runner.max_error,runner.relu?runner.relu->BootCount()-before_boots:0);
+          full?output->exact.values:std::vector<double>{},fhe_logits,runner.max_error,runner.relu?runner.relu->BootCount()-before_boots:0,runner.numerical);
       };
       if(context)runner.timing.Gpu(InferencePhase::ValidationOutput,result_output);
       else runner.timing.Cpu(InferencePhase::ValidationOutput,result_output);
       }
       if(options.run.CoarseTiming()&&context)Sync();
-      report.AddImage(image,runner.timing.Finish(inference_begin));
+      report.AddImage(image,runner.timing.Finish(inference_begin),runner.numerical);
       event_timing.FinishImage();
       if(GpuTraceEnabled())std::cout<<"GPU_TRACE_AUDIT {\"image\":"<<image
         <<",\"ranges\":"<<trace_image.RangeCount()<<"}\n"<<std::flush;

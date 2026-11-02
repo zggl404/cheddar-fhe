@@ -107,6 +107,16 @@ if sys.argv[sys.argv.index('--time-cpu')+1]=='on':
 if len(sys.argv)>1:
     for cpu in ('off','on'):
         result=subprocess.run([sys.executable,str(root/'scripts/run_inference.py'),'--binary',sys.argv[1],
+            '--count','2','--time-cpu',cpu,'--numerical-gate','warn','--log-format','json'],text=True,capture_output=True)
+        assert result.returncode==0,result.stderr
+        results=[json.loads(s[len('RESULT '):]) for s in result.stdout.splitlines() if s.startswith('RESULT ')]
+        assert len(results)==2 and all(r['status']=='NUMERICAL_FAILED' and not r['success'] for r in results)
+        assert result.stderr.count('NUMERICAL_WARNING')==2
+        if cpu=='on':
+            report=next(json.loads(s[len('CPU_TIMING '):]) for s in result.stdout.splitlines() if s.startswith('CPU_TIMING '))
+            assert not report['numerical_passed'] and report['diagnostic_only']
+    for cpu in ('off','on'):
+        result=subprocess.run([sys.executable,str(root/'scripts/run_inference.py'),'--binary',sys.argv[1],
             '--count','2','--warmup','1','--time-cpu',cpu,'--log-format','json'],text=True,capture_output=True)
         assert result.returncode==0,result.stderr
         timings=[json.loads(s[len('CPU_TIMING '):]) for s in result.stdout.splitlines() if s.startswith('CPU_TIMING ')]
@@ -136,4 +146,9 @@ if len(sys.argv)>1:
         assert raw['timing_detail']=='coarse' and not raw['ks_profile']
         assert raw['inference_ms']>0 and raw['fhe_eval_ms']==0
         assert 'TIMING ' not in result.stdout
+        result=subprocess.run([sys.argv[1],'--count','2','--time-cpu','off','--timing-file',str(path),
+            '--numerical-gate','warn'],text=True,capture_output=True)
+        assert result.returncode==0,result.stderr
+        raw=json.loads(path.read_text());validate_run(raw)
+        assert raw['numerical_gate']=='warn' and not raw['numerical_passed'] and raw['numerical_failures']==2
 print('INFERENCE_LAUNCHER_TEST_PASS')

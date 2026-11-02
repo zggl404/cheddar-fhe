@@ -117,6 +117,11 @@ human 输出为参数、Logits、`Success: true`。失败仍输出错误并返�
 Success 表示当前构建启用的数值/结构检查通过，不表示预测一定等于数据标签。
 明文参考关闭时，不声称与明文参考一致。
 
+`--numerical-gate strict|warn` 默认 strict。warn 保留 `0.01` 数值门槛，但将有限数值超标及最终参考
+top-1 不一致记录为 `NUMERICAL_WARNING`，继续运行；结果标记 `NUMERICAL_FAILED`、`success=false`。
+计时摘要同时标记 `numerical_passed=false`、`diagnostic_only=true`，只供诊断。
+NaN/Inf、CUDA、结构、密钥及其他非数值门槛错误仍中止。完整运行不代表正确性通过。
+
 开启 CPU 并加 `--verbose 1` 时保留旧 schema v2 的 `IMAGE_TIMING`、`TIMING` 审计记录，
 其中旧的扁平 `non_keyswitch_ms` 仍以整个 Inference 为父区间；新公开三分类位于 `CPU_TIMING`，
 以 FHE 为父区间。两套范围不能混加。现有 GPU 验证脚本已经显式开启 CPU/verbose。
