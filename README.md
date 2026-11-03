@@ -270,6 +270,51 @@ key load 和预编码本来就是 Prepare 的子项，不要再与完整 Prepare
 粗粒度 `wall.json` 标记 `timing_detail=coarse`，原有叶阶段字段未采集，不能把其中的 0 解释为没有对应工作。
 `wrapper_wall_ms` 另存于 JSON，包含采集工具启动/导出；批处理总耗时还包含密钥预生成和分析。
 
+### 导出 KS / NonKS 起止时间线
+
+在仓库根目录执行，使用上面 NVTX 批处理生成的同一次采集结果：
+
+```bash
+ANALYSIS=validation/nvtx-all-split/resnet20/profiled/analysis
+
+python3 scripts/keyswitch_timeline.py "$ANALYSIS/ks_segments.csv" \
+  --activities "$ANALYSIS/gpu_activities.csv.gz" \
+  --output validation/resnet20-timeline
+```
+
+`gpu_activities.csv.gz` 由 `run_inference.py` 的 NVTX 模式或 `benchmark_nvtx.py`
+自动调用 `analyze_gpu_activity.py`，从 Nsight 导出的 `nvtx.sqlite` 中生成。
+每行记录一个 kernel、memcpy 或 memset 的 GPU 起止时间，脚本直接读取压缩文件。
+
+| 参数 | 是否必填 | 作用 |
+|---|---|---|
+| 第一个位置参数 `ks_segments.csv` | 是 | 每个 KS 阶段的 GPU 起止时间戳；不要使用 `ks_units.csv` |
+| `--output DIR` | 是 | 自动创建输出目录；重新运行会覆盖其中的三个报告文件 |
+| `--activities FILE` | 否 | 使用同次采集的首尾 GPU 活动确定每图 T0/T1，标记 `scope=gpu_activity_envelope` |
+| `--bounds FILE` | 否 | 使用自行提供的完整 Inference 边界 CSV，标记 `scope=inference`；与 `--activities` 互斥 |
+
+输出文件：
+
+- `timeline.txt`：按 `T0 → NonKS_0 → [KS_0] → NonKS_1 → … → T1` 逐行展开，
+  显示每段绝对起止时间戳、相对 T0 的时间、时长及 KS 的层名和类型。
+- `timeline.csv`：可进一步处理的全部 KS / NonKS 区间，保留原始 KS 阶段 ID 和归属。
+- `summary.json`：每图窗口、KS、NonKS 时间，以及正式图片的总量与均值。
+
+时间戳单位为 ns，使用左闭右开区间 `[start_ns,end_ns)`；相对 T0 的时间单位为 us。
+脚本合并重叠 KS 后求补集，每图校验 `KS + NonKS = T1 - T0`，误差必须为 0 ns。
+保留 warmup 的区间，但汇总均值只使用 `measured=1` 的图片。
+NonKS 包含其区间内的计算、内存操作和空档；KS 内部间隔仍计入 KS。
+
+**上面的命令得到 GPU 活动窗口内的时间线，不能等同于完整 Inference residual。**
+`--activities` 与 `--bounds` 都省略时，仅覆盖首个 KS 开始至最后一个 KS 结束，
+标记 `scope=ks_envelope`，无法确定该窗口之外的 NonKS。
+
+当前采集流程尚未自动生成 `inference_bounds.csv`。如果已经获得同一 trace 时钟下、
+与 Inference 计时一致的起止边界，可将 `--activities` 替换为 `--bounds inference_bounds.csv`，
+CSV 列为 `image,start_ns,end_ns`，可另加 `measured`。
+`wall.json` 只有 Inference 时长，现有 `cheddar:image:*` 范围与该计时边界也不完全一致，
+不能据此直接补出完整 Inference 的起止时间戳。详细格式见 [KS 时间线说明](docs/keyswitch-spans.md#导出-ks--nonks-时间线)。
+
 ## 6. 环境准备（非 Docker 或容器缺少依赖时）
 
 密文推理需要 Linux、NVIDIA GPU 和 CUDA 开发工具包。下面以 Ubuntu、

@@ -67,6 +67,56 @@ residual 包含独立置换、其他 kernel、host、剩余空闲、输入、校
 阶段重叠、多 kernel stream 或跨度中夹入其他工作。旧二进制缺少标签时明确失败，不能静默退回旧口径。
 `--split-hybrid off` 保留 kernel 诊断，批量主字段 `nvtx_keyswitch_ms` 和 residual 为 null。
 
+## 导出 KS / NonKS 时间线
+
+`scripts/keyswitch_timeline.py` 读取 **NVTX 的 `ks_segments.csv`**，按 image 排序，
+对 KS 区间求并集，再输出其补集。使用 segment，不能使用 `ks_units.csv` 的首尾包络。
+脚本仅使用 Python 标准库，不运行 GPU，也不修改输入文件。
+
+```bash
+python scripts/keyswitch_timeline.py validation/resnet20-ks-spans/nvtx-analysis/ks_segments.csv \
+  --activities validation/resnet20-ks-spans/nvtx-analysis/gpu_activities.csv.gz \
+  --output validation/resnet20-timeline
+```
+
+该命令使用同次采集的首个至最后一个 GPU 活动，摘要明确标记
+`scope=gpu_activity_envelope`。它覆盖输入、FHE、校验等已记录活动，但不覆盖包络之外的
+Inference 开头和结尾，因此不能直接等同于完整 Inference residual。
+`gpu_activities.csv.gz` 由 NVTX 运行入口自动调用 `analyze_gpu_activity.py` 从 `nvtx.sqlite`
+导出，包含 kernel、memcpy、memset 的绝对起止时间，脚本可直接读取压缩文件。
+
+如已从同一 trace 时间轴导出完整 Inference 起止边界，改用 `--bounds inference_bounds.csv`：
+
+```csv
+image,start_ns,end_ns,measured
+0,1000000,2000000,0
+1,3000000,4000000,1
+```
+
+这是格式示例，实际时间戳必须来自自己的 trace。`--bounds` 和 `--activities` 二选一；
+`--bounds` 标记 `scope=inference`，并要求所有 KS 位于对应边界内。`wall.json` 只有时长，
+不能将其时长直接加到首个 kernel 时间上来伪造完整 Inference 边界。
+当前采集流程尚未自动生成 `inference_bounds.csv`；这是调用者提供准确边界的输入接口。
+现有 `cheddar:image:*` 外层范围还覆盖 Inference 计时之外的工作，与 `inference_ms` 边界
+不完全一致，不能直接替代同口径的完整 Inference 边界。
+两个选项均省略时，仅使用首个 KS 开始至最后一个 KS 结束，标记 `scope=ks_envelope`，
+不包含该包络之外的 NonKS。所有模式均保留 warmup 行，均值只使用 `measured=1` 的图片。
+
+输出目录包含：
+
+- `timeline.csv`：按时间顺序交替列出 KS / NonKS，含 image、measured、scope、interval_id、
+  start_ns、end_ns、duration_ns/ms、相对 T0 的 us，以及原始 segment_ids、ks_ids、layers、
+  subpaths、kinds、segments。重叠 KS 合并并保留来源，连续但不重叠的阶段保留独立 ID。
+- `timeline.txt`：`T0 → NonKS_0 → [KS_0] → NonKS_1 → … → T1` 的逐行展开，
+  每行显示绝对起止时间戳、相对 T0 时间和时长；每图尾部及文件末尾给出汇总。
+- `summary.json`：每图 T0/T1、窗口/KS/NonKS 时间、区间数量、合并重叠量，
+  正式图片总量与均值，以及 `accounting_error_ns`。T0/T1 为左闭右开边界 `[T0,T1)`。
+
+所有 `start_from_t0_us` / `end_from_t0_us` 都以本文件的 T0 为原点，
+与原 `ks_segments.csv` 以首个 kernel 为原点的相对时间可能不同。绝对 ns 不变。
+每图必须满足 `KS + NonKS = T1 - T0`，误差为 0 ns；NonKS 包含其区间内的计算、
+内存操作和空档，不是纯 kernel 时间。KS 段内部的间隔仍属于 KS，不能重复归入 NonKS。
+
 ## Event 与 NVTX 独立交叉验证
 
 以相同权重、参数、预编码模式、图片及已保存的密钥分别运行。两次都关闭 CPU 操作同步计时：
