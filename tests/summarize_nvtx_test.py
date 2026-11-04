@@ -1,6 +1,7 @@
 """Profiled-only batch export: first image, measured means, warn and partial failure."""
 import copy
 import csv
+from decimal import Decimal
 import gzip
 import json
 from pathlib import Path
@@ -37,7 +38,6 @@ def fixture(source, name, failed=False):
                 keys_generated=0, keys_loaded=2, key_count=2, numerical_gate='warn',
                 numerical_passed=not failed, numerical_failures=3 if failed else 0)
     write_json(folder/'wall.json', wall)
-    (folder/'time.txt').write_text('real 0.20\nuser 0.15\nsys 0.02\n')
     spans = {str(i):dict(keyswitch_span_ns=k*1000000) for i,k in enumerate(ks_times)}
     write_json(analysis/'summary.json', dict(method='nsys_keyswitch_segment_gpu_span_v1', split_hybrid=True,
                ks_spans=dict(coverage_verified=True, images=spans), measured_images=[1,2,3,4,5],
@@ -71,21 +71,27 @@ with tempfile.TemporaryDirectory(prefix='cheddar-profiled-report-') as temporary
     assert sorted(p.name for p in (root/'report').iterdir())==sorted(['00_summary.csv',*MODELS])
     rows=list(csv.DictReader((root/'report/00_summary.csv').open()))
     assert len(rows)==len(MODELS)
+    expected_fields = ['model','end_to_end_ms','key_load_ms','weight_preencode_ms',
+                       'init_and_teardown_ms','inference_total_ms','inference_mean_ms',
+                       'keyswitch_mean_ms','non_keyswitch_mean_ms',
+                       *[f'image_{i}_{kind}_ms' for i in range(6) for kind in ('keyswitch','non_keyswitch')],
+                       'status','error']
+    assert list(rows[0])==expected_fields
     for row in rows:
-        assert float(row['time_real_ms'])==200 and float(row['end_to_end_ms'])==150
+        assert float(row['end_to_end_ms'])==150
         assert float(row['key_load_ms'])==20 and float(row['weight_preencode_ms'])==10
-        assert float(row['prepare_total_ms'])==50 and float(row['other_prepare_and_teardown_ms'])==20
-        assert float(row['first_image_inference_ms'])==30 and float(row['inference_mean_ms'])==14
-        assert float(row['measured_inference_total_ms'])==70 and float(row['warmup_inference_total_ms'])==30
-        assert float(row['keyswitch_mean_ms'])==4 and float(row['non_keyswitch_mean_ms'])==10
-        assert float(row['keyswitch_total_ms'])==26 and float(row['non_keyswitch_total_ms'])==74
-        assert float(row['first_image_keyswitch_ms'])==6 and float(row['first_image_non_keyswitch_ms'])==24
-        assert row['timeline_scope']=='gpu_activity_envelope'
-        assert float(row['timeline_window_mean_ms'])==13 and float(row['inference_outside_timeline_mean_ms'])==1
+        assert Decimal(row['init_and_teardown_ms'])==20
+        inference = [Decimal(row[f'image_{i}_keyswitch_ms'])+Decimal(row[f'image_{i}_non_keyswitch_ms']) for i in range(6)]
+        assert inference==[30,10,12,14,16,18]
+        assert sum(inference)==Decimal(row['inference_total_ms'])
+        assert sum(inference[1:])/5==Decimal(row['inference_mean_ms'])
+        assert Decimal(row['keyswitch_mean_ms'])==4 and Decimal(row['non_keyswitch_mean_ms'])==10
+        assert Decimal(row['inference_mean_ms'])==Decimal(row['keyswitch_mean_ms'])+Decimal(row['non_keyswitch_mean_ms'])
+        assert Decimal(row['end_to_end_ms'])==sum(Decimal(row[k]) for k in
+               ('key_load_ms','weight_preencode_ms','inference_total_ms','init_and_teardown_ms'))
         assert sorted(p.name for p in (root/'report'/row['model']).iterdir())==['summary.json','timeline.csv','timeline.txt']
     warning=next(r for r in rows if r['model']=='vgg11')
-    assert warning['status']=='NUMERICAL_FAILED' and warning['diagnostic_only']=='True'
-    assert warning['numerical_passed']=='False' and warning['numerical_failures']=='3'
+    assert warning['status']=='NUMERICAL_FAILED' and warning['error']==''
     assert (source/'summary.json').read_bytes()==original
     command=[sys.executable,'-B',str(ROOT/'scripts/summarize_nvtx.py'),'--input',str(source)]
     cli=subprocess.run([*command,'--output',str(root/'cli')],text=True,capture_output=True)
@@ -98,13 +104,13 @@ with tempfile.TemporaryDirectory(prefix='cheddar-profiled-report-') as temporary
     broken=copy.deepcopy(batch)
     broken['models'][0].update(status='FAILED',error='worker failed')
     write_json(source/'summary.json',broken)
-    (source/'alexnet/profiled/time.txt').unlink()
+    (source/'alexnet/profiled/wall.json').unlink()
     partial=subprocess.run([*command,'--output',str(root/'partial')],text=True,capture_output=True)
     assert partial.returncode==1,(partial.stdout,partial.stderr)
     failures=list(csv.DictReader((root/'partial/00_summary.csv').open()))
     assert failures[0]['status']=='FAILED' and failures[0]['end_to_end_ms']==''
     assert failures[-1]['status']=='FAILED' and failures[-1]['error']
-    assert failures[1]['end_to_end_ms']=='150.0'
+    assert Decimal(failures[1]['end_to_end_ms'])==150
     assert not (root/'partial'/MODELS[0]).exists() and not (root/'partial/alexnet').exists()
 
     # A different measured-image census must never silently produce a mean.
@@ -114,4 +120,17 @@ with tempfile.TemporaryDirectory(prefix='cheddar-profiled-report-') as temporary
     write_json(analysis_path,analysis)
     mismatch=summarize(source,root/'mismatch')
     assert mismatch[0]['status']=='FAILED' and 'different measured images' in mismatch[0]['error']
-print('SUMMARIZE_NVTX_TEST_PASS all models, profiled only, warmup, warn, timeline accounting and failures')
+
+    precise=root/'precise';precise.mkdir()
+    wall=fixture(precise,'resnet20')
+    for key in ('inference_ms','dispatch_ms'):
+        wall['images'][0][key]=30.000001
+        wall[key]=100.000001
+    wall['total_ms']=150.000001
+    write_json(precise/'resnet20/profiled/wall.json',wall)
+    write_json(precise/'summary.json',dict(batch,models=[models[0]],status='PASS'))
+    precise_row=summarize(precise,root/'precise-report')[0]
+    assert precise_row['image_0_non_keyswitch_ms']==Decimal('24.000001')
+    assert precise_row['end_to_end_ms']==sum(precise_row[k] for k in
+           ('key_load_ms','weight_preencode_ms','inference_total_ms','init_and_teardown_ms'))
+print('SUMMARIZE_NVTX_TEST_PASS compact columns, per-image ns accounting, measured means, warn and failures')
