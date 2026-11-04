@@ -270,7 +270,75 @@ key load 和预编码本来就是 Prepare 的子项，不要再与完整 Prepare
 粗粒度 `wall.json` 标记 `timing_detail=coarse`，原有叶阶段字段未采集，不能把其中的 0 解释为没有对应工作。
 `wrapper_wall_ms` 另存于 JSON，包含采集工具启动/导出；批处理总耗时还包含密钥预生成和分析。
 
-### 导出 KS / NonKS 起止时间线
+### 一次汇总 profiled 时间与全部模型时间线
+
+完成上面的 `benchmark_nvtx.py --split-hybrid on --numerical-gate warn` 后，运行：
+
+```bash
+python3 scripts/summarize_nvtx.py \
+  --input validation/nvtx-all-split \
+  --output validation/nvtx-all-report
+```
+
+这是离线整理，只读取原来的 profiled 采集结果，不重新运行模型或生成密钥。
+`--input` 是原 benchmark 输出目录，`--output` 必须是独立的新目录。
+脚本读取原实验的 count/warmup；上述配置保留 6 张，首张单列，均值使用后 5 张。
+输出只有一张全模型时间汇总表和各模型的时间线：
+
+```text
+nvtx-all-report/
+├── 00_summary.csv
+├── resnet20/
+│   ├── timeline.txt
+│   ├── timeline.csv
+│   └── summary.json
+├── resnet32/
+│   └── …
+└── …
+```
+
+`00_summary.csv` 每模型一行，所有时间单位都是 ms：
+
+| 字段 | 含义 |
+|---|---|
+| `time_real_ms` / `time_user_ms` / `time_sys_ms` | profiled 模型进程的 GNU time real/user/sys；real 不含 nsys 导出和后处理 |
+| `end_to_end_ms` | C++ 完整端到端，覆盖准备、全部图片和收尾 |
+| `model_prepare_ms` / `boot_prepare_ms` / `prepare_total_ms` | 模型及其他进程开销、Boot 资源准备及二者之和 |
+| `key_load_ms` / `weight_preencode_ms` | 全部密钥加载、权重预编码；已经包含在准备时间中 |
+| `other_prepare_and_teardown_ms` | 端到端减去 key load、预编码、全部 Inference 后的其余时间 |
+| `inference_total_ms` | 全部图片 Inference 总量，包含 warmup |
+| `first_image` / `first_image_inference_ms` | 首张图片编号及其 Inference 时间 |
+| `warmup_inference_total_ms` / `measured_inference_total_ms` | warmup 图片总量、排除 warmup 后的图片总量 |
+| `inference_mean_ms` | 排除 warmup 的 Inference 均值；当前除以 5 |
+| `first_image_keyswitch_ms` / `first_image_non_keyswitch_ms` | 首张图的 KS 阶段跨度及 Inference 剩余时间 |
+| `keyswitch_total_ms` / `non_keyswitch_total_ms` | 全部图片的 KS / NonKS 总量，包含 warmup |
+| `keyswitch_mean_ms` / `non_keyswitch_mean_ms` | 排除 warmup 后的 KS 阶段跨度均值及同次 Inference 剩余时间均值 |
+| `timeline_scope` / `timeline_window_mean_ms` | 时间线的边界口径，以及排除 warmup 的时间线窗口均值 |
+| `inference_outside_timeline_mean_ms` | Inference 均值减时间线窗口均值，说明首尾边界口径的差额 |
+
+主汇总满足：
+
+```text
+end_to_end_ms = key_load_ms + weight_preencode_ms + inference_total_ms
+              + other_prepare_and_teardown_ms
+inference_mean_ms = keyswitch_mean_ms + non_keyswitch_mean_ms
+```
+
+KS 固定使用已验证的 NVTX 连续阶段跨度，包含段内间隔；NonKS 固定使用同次完整 Inference
+减去 KS，不另列 kernel duration 或其他计时版本。`prepare_total_ms` 包含 key load 和预编码，
+不要在端到端中重复相加。coarse 运行没有采集 Conv/ReLU/Boot 执行的独立墙钟叶阶段，汇总不会把这些未采集项显示为 0。
+
+各模型 timeline 仍使用首尾 GPU 活动边界，标记 `gpu_activity_envelope`，
+其 NonKS 加上 `inference_outside_timeline_mean_ms` 才对应主表的完整 Inference NonKS 均值。
+KS 总量必须与主表一致；每图时间线还校验 `KS + NonKS = T1 - T0`。
+
+`status` 保留原 benchmark 的模型状态，`diagnostic_only` 保留原实验的诊断属性；
+`numerical_passed` / `numerical_failures` 来自 profiled 运行。
+warn 模式的有限数值超标仍输出全部时间和 timeline；整理完整时返回 0。
+模型运行失败、文件缺失或计时校验失败时，该模型的时间列留空，`error` 写明原因，
+继续整理其他模型，最终返回非零。输入必须是已结束且 `split-hybrid on` 的 benchmark。
+
+### 单独导出一个模型的 KS / NonKS 起止时间线
 
 在仓库根目录执行，使用上面 NVTX 批处理生成的同一次采集结果：
 
