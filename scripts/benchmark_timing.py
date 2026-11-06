@@ -21,7 +21,7 @@ def launch(args, model, weights, keys, folder, encoding, method):
     command = [sys.executable, str(ROOT/'scripts/run_inference.py'), '--model', model,
         '--build-dir', str(args.build_dir), '--weights', str(weights), '--cifar', str(args.cifar),
         '--key-mode', 'load', '--key-dir', str(keys), '--encode-mode', encoding,
-        '--count', str(args.count), '--warmup', str(args.warmup), '--split-hybrid', 'on',
+        '--count', str(args.count), '--warmup', str(args.warmup), '--split-hybrid', args.split_hybrid,
         '--numerical-gate', 'strict', '--log-format', 'json', '--timing-dir', str(folder),
         '--time-cpu', 'on' if method == 'CPU' else 'off',
         '--time-cuda-event', 'on' if method == 'CUDA_EVENT' else 'off',
@@ -62,6 +62,7 @@ def write_summary(output, summary):
         'baseline_other_prepare_and_teardown_ms', 'baseline_inference_mean_ms',
         'event_inference_mean_ms', 'nvtx_inference_mean_ms', 'cpu_inference_mean_ms',
         'event_keyswitch_ms', 'nvtx_keyswitch_ms', 'event_non_keyswitch_ms', 'nvtx_non_keyswitch_ms',
+        'event_hybrid_ms','nvtx_hybrid_ms','cpu_hybrid_ms',
         'cpu_non_keyswitch_ms', 'delta_ms', 'delta_percent',
         'cpu_keyswitch_ms', 'cpu_fhe_total_ms', 'matched_measured_segments', 'max_baseline_logits_delta',
         'temporary_keys_removed', 'error')
@@ -81,6 +82,7 @@ def main():
     parser.add_argument('--count', type=int, default=6)
     parser.add_argument('--warmup', type=int, default=1)
     parser.add_argument('--encode-mode', choices=('auto', 'pre', 'stream'), default='auto')
+    parser.add_argument('--split-hybrid',choices=('on','off'),default='on')
     parser.add_argument('--nsys', default='nsys')
     parser.add_argument('--time-binary', default='/usr/bin/time')
     args = parser.parse_args()
@@ -95,8 +97,8 @@ def main():
     if not args.cifar.is_file():parser.error('missing CIFAR file')
     if args.output.exists():parser.error('output directory already exists')
     args.output.mkdir(parents=True)
-    args.split_hybrid, args.numerical_gate = 'on', 'strict'
-    summary = dict(status='RUNNING', count=args.count, warmup=args.warmup,
+    args.numerical_gate = 'strict'
+    summary = dict(status='RUNNING', count=args.count, warmup=args.warmup,split_hybrid=args.split_hybrid,
         policy='Sequential independent baseline/Event/NVTX/CPU; strict gates; same saved keys; temporary keys removed per model', models=[])
     for model in args.models:
         row = dict(model=model, status='FAILED', measured_count=args.count-args.warmup, temporary_keys_removed=False)
@@ -124,6 +126,7 @@ def main():
                     maximum = max(maximum, verify_results(base, wall, results, args.count))
                     row[name+'_inference_mean_ms'] = sum(r['inference_ms'] for r in wall['images'][args.warmup:])/(args.count-args.warmup)
                     row[name+'_non_keyswitch_ms'] = report['NonKeyswitchTime']
+                    row[name+'_hybrid_ms'] = report['Hybrid']
                     if name == 'cpu':row.update(cpu_keyswitch_ms=report['KeyswitchTime'], cpu_fhe_total_ms=report['total'])
                 paired = compare(folder/'event', folder/'nvtx', folder/'comparison')
                 row.update(status='PASS', event_keyswitch_ms=paired['event_keyswitch_mean_ms'], nvtx_keyswitch_ms=paired['nvtx_keyswitch_mean_ms'],

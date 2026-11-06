@@ -83,8 +83,8 @@ inline void RegisterKsBaby(const void* babies,const KsTraceUnit& unit) {
 // Both methods share these boundaries/IDs; NVTX-only runs never record events.
 class KsTraceSegment {
  public:
-  KsTraceSegment(const KsTraceUnit& unit,const char* segment,bool begin=true)
-      :unit_(unit),segment_(segment) {if(begin)Begin();}
+  KsTraceSegment(const KsTraceUnit& unit,const char* segment,bool begin=true,const char* category="keyswitch")
+      :unit_(unit),segment_(segment),category_(category) {if(begin)Begin();}
   KsTraceSegment(const KsTraceSegment&)=delete;
   KsTraceSegment& operator=(const KsTraceSegment&)=delete;
   void Begin() {
@@ -92,7 +92,7 @@ class KsTraceSegment {
     const auto text=std::string("cheddar:ks:{\"ks_id\":")+std::to_string(unit_.id)+
       ",\"segment_id\":"+std::to_string(++ks_trace.next_segment)+
       ",\"kind\":\""+unit_.kind+"\",\"segment\":\""+segment_+
-      "\",\"logical_ks\":"+std::to_string(unit_.logical_ks)+
+      "\",\"category\":\""+category_+"\",\"logical_ks\":"+std::to_string(unit_.logical_ks)+
       ",\"lt_id\":"+std::to_string(ks_trace.lt_id)+
       ",\"baby_id\":"+std::to_string(unit_.baby_id)+
       ",\"includes_permutation\":"+(unit_.includes_permutation?"true":"false")+"}";
@@ -117,6 +117,7 @@ class KsTraceSegment {
  private:
   KsTraceUnit unit_;
   const char* segment_;
+  const char* category_;
   bool active_=false;
   int64_t event_segment_=-1;
 };

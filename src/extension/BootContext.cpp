@@ -255,6 +255,8 @@ void BootContext<word>::ModUpToMax(Ct &res, const Ct &input,
     }
   } else {
     GpuTraceRange trace("cheddar:source:sparse_to_dense");
+    const auto lift_unit=sse?MakeKsTraceUnit("shared_lift",0):KsTraceUnit{};
+    KsTraceSegment lift(lift_unit,"prepare",true,"hybrid");
     ProfileScope profile(sse?ProfileOp::SharedLift:ProfileOp::Other);
     this->ntt_handler_.INTTAndMultConst(res_ax_view,np,working_ct->AxConstView(),mod_max_intt_const_.ConstView(0));
     this->elem_handler_.ModUpToMax(tmp_ax_view,res.AxConstView());
@@ -262,6 +264,7 @@ void BootContext<word>::ModUpToMax(Ct &res, const Ct &input,
   }
 
   if (sse) {
+    std_segment.Begin();
     GpuTraceRange trace("cheddar:source:sparse_to_dense");
     ProfileScope profile(ProfileOp::SparseToDense);
     // StD key-switch

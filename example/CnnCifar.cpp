@@ -307,7 +307,7 @@ int main(int argc,char** argv) {
     }
     if(client)report.RecordKeys(*client);
     resnet::Model normalization{};normalization.mean=model.mean;normalization.stdev=model.stdev;
-    GpuEventTiming event_timing(65536,options.run.split_hybrid);
+    GpuEventTiming event_timing(131072,true);
     GpuTraceRange trace_run("cheddar:run",false);
     for(int image=options.start;image<options.start+options.count;++image) {
       GpuTraceImage trace_image(image);event_timing.BeginImage(image);

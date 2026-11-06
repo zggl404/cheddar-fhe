@@ -76,10 +76,43 @@ CREATE TABLE CUPTI_ACTIVITY_KIND_KERNEL(start INTEGER,end INTEGER,correlationId 
         except ValueError as exc:assert error in str(exc),(name,str(exc))
         else:raise AssertionError('accepted '+name)
     reject('missing',"DELETE FROM NVTX_EVENTS WHERE text LIKE 'cheddar:ks:%'",'missing KS segment')
-    reject('unowned',"DELETE FROM NVTX_EVENTS WHERE text LIKE '%multkey%'",'unowned KS kernel')
+    reject('unowned',"DELETE FROM NVTX_EVENTS WHERE text LIKE '%multkey%'",'unowned KS/Hybrid kernel')
     reject('duplicate',"INSERT INTO NVTX_EVENTS SELECT * FROM NVTX_EVENTS WHERE text LIKE '%multkey%'",'nested KS segments')
     reject('concurrent',"UPDATE CUPTI_ACTIVITY_KIND_KERNEL SET streamId=2 WHERE correlationId=100",'one GPU kernel stream')
     reject('foreign',"UPDATE CUPTI_ACTIVITY_KIND_KERNEL SET start=12015,end=12018 WHERE correlationId=106",'unrelated GPU work')
-    reject('wrong_category',"UPDATE NVTX_EVENTS SET text='cheddar:op:automorphism' WHERE text='cheddar:op:key_mult'",'NonKS kernel inside')
+    reject('wrong_category',"UPDATE NVTX_EVENTS SET text='cheddar:op:automorphism' WHERE text='cheddar:op:key_mult'",'category disagrees')
+    # Fused final b/a reductions share one continuous Hybrid stage, including its internal gap.
+    fused_path=root/'fused.sqlite'
+    fused=sqlite3.connect(fused_path);db.backup(fused)
+    fused.execute("UPDATE NVTX_EVENTS SET text='cheddar:op:moddown_rescale' WHERE text='cheddar:op:moddown' AND start IN (555,2555)")
+    fused.execute("UPDATE NVTX_EVENTS SET text='cheddar:op:automorphism_accum' WHERE text='cheddar:op:automorphism' AND start IN (310,2310)")
+    for image in range(2):
+        base=image*2000
+        for unit,segment,kind,a,b in [(5,6,'automorphism_accum',305,340),(6,7,'shared_lift',500,530)]:
+            meta=dict(ks_id=unit,segment_id=segment,kind=kind,segment='core',logical_ks=0,
+                      lt_id=0,baby_id=0,includes_permutation=False,category='hybrid')
+            fused.execute('INSERT INTO NVTX_EVENTS VALUES(?,?,7,?,NULL)',(base+a,base+b,'cheddar:ks:'+json.dumps(meta)))
+        fused.execute('INSERT INTO NVTX_EVENTS VALUES(?,?,7,?,NULL)',(base+502,base+528,'cheddar:op:shared_lift'))
+    for rowid,text in fused.execute("SELECT rowid,text FROM NVTX_EVENTS WHERE text LIKE 'cheddar:ks:%'").fetchall():
+        meta=json.loads(text.split(':',2)[2])
+        if meta['segment_id']==3:
+            meta['category']='hybrid'
+            fused.execute('UPDATE NVTX_EVENTS SET text=? WHERE rowid=?',('cheddar:ks:'+json.dumps(meta),rowid))
+    fused.commit()
+    mixed=analyze(fused_path,root/'fused',1,split_hybrid=False)
+    assert mixed['method']==result['method'] and not mixed['timing_diagnostic_only']
+    assert mixed['mean_ms']['keyswitch_span']==145/1e6 and mixed['mean_ms']['hybrid_span']==30/1e6
+    assert mixed['mean_ms']['kernel_hybrid']==25/1e6  # The additional 5 ns is inside the finish stage.
+    assert mixed['images'][0]['logical_ks']==10 and mixed['images'][0]['execution_units']==3
+    assert mixed['images'][0]['hybrid_segments']==3
+    fused_units=list(csv.DictReader((root/'fused/ks_units.csv').open()))
+    baby=next(r for r in fused_units if r['image']=='1' and r['kind']=='baby')
+    assert float(baby['keyswitch_ms'])==50/1e6 and float(baby['hybrid_ms'])==15/1e6
+    assert baby['logical_ks']=='8' and baby['segment_count']=='2'
+    fused.execute("DELETE FROM NVTX_EVENTS WHERE text LIKE '%\"category\": \"hybrid\"%'");fused.commit()
+    try:analyze(fused_path,root/'fused-missing',1,split_hybrid=False)
+    except ValueError as error:assert 'unowned KS/Hybrid kernel' in str(error)
+    else:raise AssertionError('accepted unmarked fused Hybrid work')
+    fused.close()
     db.close()
 print('KEYSWITCH_SEGMENTS_TEST_PASS timestamps, gaps, shared tails, warmup and coverage rejection')

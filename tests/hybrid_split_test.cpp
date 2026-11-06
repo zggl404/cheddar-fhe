@@ -18,7 +18,10 @@ int main(int argc,char** argv) {
   auto context=Boot::Create(*param,resolved.boot);Encoder<Word>::SetGpuOnlyEncoding(true);
   UserInterface<Word> client(context);
   std::array<uint64_t,kProfileOps> covered{};
+  int trace_image_id=0;
   auto measure=[&](bool split,const std::string& label,auto work) {
+    GpuTraceImage image(trace_image_id++);
+    GpuTraceRange layer("layer",label.c_str());
     param->split_hybrid_=split;InferenceTiming timer(Sync);timer.SetProfiling(true);timer.SetSplitHybrid(split);
     timer.Reset();auto begin=InferenceClock::now();timer.Gpu(InferencePhase::Linear,work);auto times=timer.Finish(begin);
     if(!split)for(size_t i=0;i<kProfileOps;++i)covered[i]+=times.operations.calls[i];
@@ -34,10 +37,14 @@ int main(int argc,char** argv) {
     CopyHostToDevice(a.bx_,words);CopyHostToDevice(a.ax_,words);
     for(size_t i=0;i<words.size();++i)words[i]=(uint64_t(i)*13469+37)%primes[i/param->degree_];
     CopyHostToDevice(b.bx_,words);CopyHostToDevice(b.ax_,words);
-    for(const auto& rotations:std::vector<std::vector<int>>{{0},{7},{1,7},{0,1,2,3,4,5,6,7,8,9}})for(bool extra:{false,true}) {
+    for(const auto& rotations:std::vector<std::vector<int>>{{0},{7},{1,7},{0,1,2,3,4,5,6,7,8,9},std::vector<int>(10,0)})for(bool extra:{false,true}) {
       auto run=[&](bool mode,Ct& out) {return measure(mode,"permute_accum",[&]{
+        GpuTraceRange source("source","linear_transform");
         context->Copy(out,b);auto dst=out.ViewVector();std::vector<std::vector<DvConstView<Word>>> src(rotations.size(),a.ConstViewVector());
         if(extra)src.push_back(out.ConstViewVector());context->elem_handler_.PermuteAccum(dst,np,rotations,src);
+        bool mixed=false;for(int rotation:rotations)mixed|=rotation!=0;
+        mixed=mixed&&(rotations.size()>1||extra);
+        if(GpuTraceEnabled())Require(ks_trace.next_segment==uint64_t(!mode&&mixed),"recursive accumulation must declare exactly one Hybrid segment");
       });};
       const auto native=run(false,fused);run(true,split);
       if(rotations==std::vector<int>{0}||(rotations.size()==1&&!extra))

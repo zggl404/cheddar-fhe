@@ -13,7 +13,8 @@ int main(int argc,char** argv) {
   assert(GpuEventEnabled());
   void* buffer=nullptr;
   assert(cudaMalloc(&buffer,1<<22)==cudaSuccess);
-  if(argc>1&&std::string(argv[1])=="ks") {
+  if(argc>1&&(std::string(argv[1])=="ks"||std::string(argv[1])=="ks-hybrid")) {
+    const bool hybrid=std::string(argv[1])=="ks-hybrid";
     assert(!GpuTraceEnabled());
     {
       GpuEventTiming events(16,true);
@@ -36,13 +37,18 @@ int main(int argc,char** argv) {
           KsTraceSegment finish(ks_trace.finish,"finish");
           assert(cudaMemsetAsync(buffer,1,1<<22)==cudaSuccess);
         }
-        assert(ks_trace.next_segment==2);
+        if(hybrid) {
+          KsTraceSegment finish(MakeKsTraceUnit("shared_lift",0),"prepare",true,"hybrid");
+          assert(cudaMemsetAsync(buffer,2,1<<22)==cudaSuccess);
+        }
+        assert(ks_trace.next_segment==uint64_t(hybrid?3:2));
       }
       events.FinishImage();
       std::ifstream csv(std::getenv("CHEDDAR_CUDA_EVENT_CSV"));std::stringstream text;text<<csv.rdbuf();
       assert(text.str().find("start_relative_ms")!=std::string::npos);
       assert(text.str().find("\"\"segment_id\"\":1")!=std::string::npos);
       assert(text.str().find("\"\"segment_id\"\":2")!=std::string::npos);
+      if(hybrid)assert(text.str().find("\"\"category\"\":\"\"hybrid\"\"")!=std::string::npos);
       std::ofstream valid(std::string(std::getenv("CHEDDAR_CUDA_EVENT_CSV"))+".valid");valid<<text.str();
     }
     {

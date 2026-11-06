@@ -5,8 +5,8 @@
 | 开关 | 方法 | 输出 |
 |---|---|---|
 | `--time-cpu on` | `steady_clock` + 同步的独占操作区间 | 端到端、Prepare、Inference，以及 FHE 三分类 |
-| `--time-cuda-event on --split-hybrid on` | 默认 CUDA stream 上的 KS 阶段 event 对 | 与 NVTX 共用阶段 ID、KS 时间及同次 Inference 剩余墙钟 |
-| `--time-nvtx on --split-hybrid on` | NVTX + Nsight Systems 的 CUDA launch correlation | 逐层 KS GPU 阶段起止时间、跨度及同次 Inference 剩余墙钟 |
+| `--time-cuda-event on` | 默认 CUDA stream 上的 KS / Hybrid 阶段 event 对 | 两种拆分模式均与 NVTX 共用阶段 ID、分类及同次 Inference 剩余墙钟 |
+| `--time-nvtx on` | NVTX + Nsight Systems 的 CUDA launch correlation | 两种拆分模式的逐层 KS / Hybrid GPU 阶段起止时间、跨度及同次 Inference 剩余墙钟 |
 
 `--ks-profile` 保留为 `--time-cpu` 的兼容别名。命令行开关覆盖继承的 tracing 环境变量；
 例如三个开关全 off 时，即使 shell 中存在 `CHEDDAR_GPU_TRACE=1` 也不会开启标记。
@@ -49,7 +49,7 @@ python scripts/run_inference.py --model resnet20 --cifar /data/test_batch.bin \
 
 ## 共同的分类与边界
 
-CPU 及旧 Event（split-hybrid off）的三个分类只覆盖 FHE 求值，即 linear + bootstrap + activation + graph operations；
+CPU 及历史逐原语 Event 的三个分类只覆盖 FHE 求值，即 linear + bootstrap + activation + graph operations；
 不含图片输入/加密、实时权重编码、网络明文参考、逐层解密校验及结果打印。
 这两种 FHE 分类按同一组正式图片求均值，单位为 ms：
 
@@ -105,20 +105,24 @@ CUDA Event 在 phase/source/part/op 所有者变化时向 legacy default stream 
 当前实现限单 host thread、legacy default stream；换成多流前须扩展测量边界。
 关闭此功能只取消计时用 event，编码器及内存分配器用于生命周期/流同步的 disable-timing event 仍保留。
 
-上述逐原语 Event 行为保留在 `--split-hybrid off`。开启 split 后，Event 复用 NVTX 的
-`KsTraceSegment` 进入/退出点和 segment_id，每段一对 event，每图统一读回。此时公开分类的
-父区间是同次完整 Inference，NonKS 是 Inference 减去 KS 的剩余墙钟，与旧 FHE total 不同。
+上述逐原语 Event 仅用于兼容历史 CSV。当前推理入口在 on/off 下都复用 NVTX 的
+`KsTraceSegment` 进入/退出点、category 和 segment_id，每段一对 event，每图统一读回。
+公开分类的父区间是同次完整 Inference，NonKS 是 Inference 减去 KS 和 Hybrid 的剩余墙钟，
+与旧 FHE total 不同。推理入口预创建 131,072 个事件，溢出明确失败。
 边界端点差异和逐段独立比较命令见 [Event/NVTX 交叉验证](keyswitch-spans.md#event-与-nvtx-独立交叉验证)。
 
 NVTX 本身只有标记，不提供 GPU 耗时。launcher 调用 Nsight Systems，把 CUDA runtime 的
 correlation ID 与 GPU 活动关联，即使 kernel 在 CPU range 退出后执行也不会错归属。
-新主口径要求 `--split-hybrid on`，按连续 KS 阶段的“最后 kernel 结束 − 首个 kernel 开始”统计，
+两种 split 模式统一按连续 KS / Hybrid 阶段的“最后 kernel 结束 − 首个 kernel 开始”统计，
 包含内部内存操作和启动/等待间隙。FusedBaby 的 prepare 与后续 finish 分段求和，权重乘加不跨入跨度。
 阶段跨度按实际执行区间归属，包含内部间隙，不是纯 GPU 指令忙碌时间。
-`NVTX_TIMING.NonKeyswitchTime = 同次 Inference 均值 − KS 阶段跨度均值`，因此其 total 是
+`NVTX_TIMING.NonKeyswitchTime = 同次 Inference 均值 − KS 阶段跨度均值 − Hybrid 阶段跨度均值`，因此其 total 是
 Inference 均值，包含当前 Inference 边界内输入、校验等工作，与 CPU/旧 Event 的 FHE total 不同。
-旧 kernel duration sum 仍保留为诊断列。`--split-hybrid off` 仅输出旧融合路径的 kernel 诊断，
-不发布新的 KS 跨度或 Inference 剩余值。单 stream、launch 覆盖、阶段闭合及重叠均经过检查。
+旧 kernel duration sum 仍保留为诊断列。`run_inference.py`、`benchmark_nvtx.py` 及
+`summarize_nvtx.py` 在 on/off 下使用相同的阶段跨度口径；off 为融合路径保留独立 Hybrid
+阶段，on 的 Hybrid 为 0。C++ 阶段标记更新后需重新编译；缺少融合阶段边界的旧 trace
+明确报错，不能自动回退到 kernel 时长之和。
+单 stream、launch 覆盖、阶段闭合及重叠均经过检查。
 逐层起止时间与共享关系见 [KS 阶段报告](keyswitch-spans.md)。
 
 ## 输出与兼容性

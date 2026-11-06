@@ -40,7 +40,7 @@ with tempfile.TemporaryDirectory(prefix='cheddar-ks-timeline-') as temporary:
     assert summary['images'][1]['merged_overlap_ns']==10
     assert summary['images'][2]['non_keyswitch_ns']==100
     assert summary['measured_images']==[1,2] and summary['warmup_images']==[0]
-    assert summary['measured_totals_ns']==dict(window_ns=230,keyswitch_ns=70,non_keyswitch_ns=160)
+    assert summary['measured_totals_ns']==dict(window_ns=230,keyswitch_ns=70,hybrid_ns=0,non_keyswitch_ns=160)
     assert summary['mean_ms']['keyswitch']==35/1e6
     assert summary['complete_inference_boundaries']
     assert json.loads((root/'full/summary.json').read_text())==summary
@@ -96,4 +96,22 @@ with tempfile.TemporaryDirectory(prefix='cheddar-ks-timeline-') as temporary:
              str(segments),'--activities',str(activities),'--output',str(root/'cli')]
     completed=subprocess.run(command,check=True,capture_output=True,text=True)
     assert json.loads(completed.stdout)['scope']=='gpu_activity_envelope'
+    fused=root/'fused.csv'
+    fused_fields=[*fields,'category']
+    write_csv(fused,fused_fields,[(0,0,1,1,100,110,10,'keyswitch'),(0,0,2,1,115,120,5,'hybrid'),
+                                  (1,1,1,1,210,230,20,'keyswitch'),(1,1,2,1,240,250,10,'hybrid')])
+    write_csv(bounds,['image','start_ns','end_ns','measured'],[(0,100,130,0),(1,200,290,1)])
+    fused_summary=generate(fused,root/'fused-output',bounds_path=bounds)
+    assert fused_summary['mean_ms']==dict(window=90/1e6,keyswitch=20/1e6,hybrid=10/1e6,non_keyswitch=60/1e6)
+    assert fused_summary['measured_images']==[1] and fused_summary['warmup_images']==[0]
+    assert not fused_summary['timing_diagnostic_only']
+    assert fused_summary['images'][1]['input_ks_segments']==2
+    rr=list(csv.DictReader((root/'fused-output/timeline.csv').open()))
+    assert {r['category'] for r in rr}=={'KS','Hybrid','NonKS'}
+    assert all(r['accounting_error_ns']==0 for r in fused_summary['images'])
+    cli=subprocess.run([sys.executable,'-B',str(Path(__file__).resolve().parents[1]/'scripts/keyswitch_timeline.py'),
+                        str(fused),'--bounds',str(bounds),'--output',str(root/'fused-cli')],capture_output=True,text=True)
+    assert cli.returncode==0,(cli.stdout,cli.stderr)
+    with fused.open('a') as handle:handle.write('1,1,3,1,215,225,10,hybrid\n')
+    reject('overlapping KS and Hybrid',lambda:generate(fused,root/'fused-overlap',bounds_path=bounds))
 print('KEYSWITCH_TIMELINE_TEST_PASS complement, overlaps, interleaved IDs, boundaries, warmup and CLI')

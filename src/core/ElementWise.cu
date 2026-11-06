@@ -1039,10 +1039,13 @@ template <typename word>
 void ElementWiseHandler<word>::PermuteAccumWorker(
     std::vector<DvView<word>> &dst, const NPInfo &np,
     const std::vector<int> &permute_amounts,
-    const std::vector<std::vector<DvConstView<word>>> &srcs) const {
+    const std::vector<std::vector<DvConstView<word>>> &srcs,
+    bool inherit_hybrid) const {
   bool permutes=false;for(int amount:permute_amounts)permutes|=amount!=0;
-  const auto op=!permutes?ProfileOp::Other:
-      (permute_amounts.size()==1&&srcs.size()==1?ProfileOp::Automorphism:ProfileOp::AutomorphismAccum);
+  const auto op=inherit_hybrid?ProfileOp::AutomorphismAccum:(!permutes?ProfileOp::Other:
+      (permute_amounts.size()==1&&srcs.size()==1?ProfileOp::Automorphism:ProfileOp::AutomorphismAccum));
+  const auto unit=!inherit_hybrid&&op==ProfileOp::AutomorphismAccum?MakeKsTraceUnit("automorphism_accum",0):KsTraceUnit{};
+  KsTraceSegment hybrid(unit,"core",true,"hybrid");
   ProfileScope profile(op);
   // Check the size of the vectors
   int num_poly = dst.size();
@@ -1074,8 +1077,10 @@ void ElementWiseHandler<word>::PermuteAccumWorker(
                                   permute_amounts.end());
 
     // Recursive call to accumulate the front and back
-    PermuteAccum(temp_view, np, permute_back, srcs_back);
-    PermuteAccum(dst, np, permute_front, srcs_front);
+    // Recursive pieces belong to the single outer mixed stage, including its gaps.
+    const bool mixed=op==ProfileOp::AutomorphismAccum;
+    PermuteAccumWorker(temp_view, np, permute_back, srcs_back,mixed);
+    PermuteAccumWorker(dst, np, permute_front, srcs_front,mixed);
     return;
   }
 

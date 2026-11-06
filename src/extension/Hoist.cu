@@ -524,6 +524,7 @@ void HoistHandler<word>::EvaluateFinalModDown(ConstContextPtr<word> context,
     res.SetScale(pt_scale_*input_scale/context->param_.GetRescalePrimeProd(pt_level_));
     return;
   }
+  KsTraceSegment finish(ks_trace.finish,"finish",true,"hybrid");
   mod_switcher.ModDownAndRescale(res_bx, final_accum.BxConstView());
   mod_switcher.ModDownAndRescale(res_ax, final_accum.AxConstView());
 

@@ -34,7 +34,8 @@ python scripts/benchmark_timing.py \
 3. NVTX-only。
 4. CPU 同步诊断。
 
-统一使用 `split-hybrid on` 和 strict 数值门禁，检查所有 load 运行的 `keys_generated=0`。
+默认使用 `split-hybrid on` 和 strict 数值门禁；加 `--split-hybrid off` 验证原融合路径。
+两种模式都检查 load 运行的 `keys_generated=0`，Event/NVTX 按同一模式的阶段 ID 配对。
 auto 先在基线解析为 pre 或 stream，再固定给其余运行。模型完成或失败后清理脚本创建的临时密钥；
 单模型失败会记录日志并继续其他模型，最终只在全部模型通过时返回 0。
 输出目录必须不存在，避免覆盖已有证据。
@@ -113,6 +114,7 @@ python scripts/compare_ks_timings.py \
 ```
 
 要求同一密钥、权重、图片、编码模式及独立运行。按 `(image, segment_id)` 对齐并核对全部归属字段。
+上述 Event/NVTX 命令可同时改为 `--split-hybrid off`，此时比较分别包含 KS 和 Hybrid。
 Event 在阶段进入/退出记录事件，NVTX 使用该阶段的 GPU 首末 kernel；边缘间隙与采集扰动会产生差值。
 PASS 表示覆盖、归属、数值门禁和汇总一致，不表示两种测量的每个数值相等。
 
@@ -134,7 +136,7 @@ Event/NVTX KS 均值和差值，以及 CPU 诊断。每模型子目录：
 计时均为 ms，起止时间列名另有标明。新 Event/NVTX 报告使用同次完整 Inference 为父区间：
 
 ```text
-Inference_mean = KeyswitchTime + NonKeyswitchTime
+Inference_mean = KeyswitchTime + Hybrid + NonKeyswitchTime
 end_to_end = key_load + weight_preencode + inference_total + other_prepare_and_teardown
 ```
 

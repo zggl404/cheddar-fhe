@@ -35,7 +35,8 @@ class ElementWiseHandler {
   void PermuteAccumWorker(
       std::vector<DvView<word>> &dst, const NPInfo &np,
       const std::vector<int> &permute_amounts,
-      const std::vector<std::vector<DvConstView<word>>> &srcs) const;
+      const std::vector<std::vector<DvConstView<word>>> &srcs,
+      bool inherit_hybrid = false) const;
 
  public:
   ElementWiseHandler(const Parameter<word> &param);

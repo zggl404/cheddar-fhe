@@ -215,12 +215,11 @@ def analyze(database, output, warmup=1, log=None, split_hybrid=False):
                 raise ValueError(f'kernel launch has missing/duplicate GPU records: {correlation}')
     if launch_count != sum(per_image[i]['kernel_count'] for i in measured):
         raise ValueError('runtime launch census does not match measured GPU kernels')
-    spans = reconstruct(ranges, activities, output, images, measured) if split_hybrid else None
+    spans = reconstruct(ranges, activities, output, images, measured)
     image_rows = []
     for image in sorted(measured):
         row = dict(image=image, **per_image[image])
-        if spans:
-            row.update(spans['images'][image])
+        row.update(spans['images'][image])
         row['kernel_total_ns'] = sum(row.get(f'kernel_{c}_ns', 0) for c in ('keyswitch', 'hybrid', 'other'))
         row['kernel_union_ns'] = union_ns(intervals[image])
         row['kernel_overlap_ns'] = row['kernel_total_ns'] - row['kernel_union_ns']
@@ -243,8 +242,8 @@ def analyze(database, output, warmup=1, log=None, split_hybrid=False):
             if count != counters[f'{kind}_records'] or ns != counters[f'{kind}_total_ns']:
                 raise ValueError('raw SQLite GPU totals disagree with exported records')
     diagnostics = [dict(r) for r in connection.execute('SELECT * FROM DIAGNOSTIC_EVENT')] if 'DIAGNOSTIC_EVENT' in tables else []
-    summary = dict(schema_version=2, method=spans['method'] if spans else 'nsys_gpu_activity_launch_correlation', split_hybrid=split_hybrid,
-        ks_spans=spans, timing_diagnostic_only=not split_hybrid,
+    summary = dict(schema_version=2, method=spans['method'], split_hybrid=split_hybrid,
+        ks_spans=spans, timing_diagnostic_only=False,
         warmup_images=images[:warmup], measured_images=sorted(measured), records=dict(counters),
         uncorrelated_records=0, duplicate_records=0, accounting_error_ns=kernel_total-classified_total,
         nvtx_range_audit=range_audit, measured_kernel_launches=launch_count,
@@ -258,7 +257,7 @@ def analyze(database, output, warmup=1, log=None, split_hybrid=False):
                   for category in ('keyswitch', 'hybrid', 'other')} for source in SOURCES},
         diagnostics=diagnostics,
         images=image_rows,
-        policy=spans['policy'] if spans else 'Legacy fused-path kernel diagnostics only; duration sums are not wall time')
+        policy=spans['policy'])
     (output / 'summary.json').write_text(json.dumps(summary, indent=2)+'\n')
     connection.close()
     return summary

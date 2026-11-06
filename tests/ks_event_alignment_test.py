@@ -38,15 +38,15 @@ with tempfile.TemporaryDirectory(prefix='cheddar-ks-alignment-') as temporary:
     assert len(list(csv.DictReader((event/'event-analysis/ks_segments.csv').open())))==8
     for name,change in [('duplicate',lambda r:r.update(start_event=1)),
                         ('missing_id',lambda r:r.update(metadata=json.dumps({**json.loads(r['metadata']),'segment_id':7}))),
+                        ('hybrid',lambda r:r.update(metadata=json.dumps({**json.loads(r['metadata']),'category':'hybrid'}))),
                         ('time',lambda r:r.update(end_relative_ms=3.))]:
         bad=[dict(r) for r in rows];change(bad[1]);write(bad)
         try:analyze(event/'events.csv',event/'worker.log',root/name,1,True)
         except ValueError:pass
         else:raise AssertionError('accepted '+name)
     write(rows)
-    try:analyze(event/'events.csv',event/'worker.log',root/'unsplit',1,False)
-    except ValueError:pass
-    else:raise AssertionError('accepted unsplit aligned events')
+    unsplit=analyze(event/'events.csv',event/'worker.log',root/'unsplit',1,False)
+    assert not unsplit['split_hybrid'] and unsplit['mean_ms']['hybrid']==0
     write(nvtx_rows,nvtx/'nvtx-analysis/ks_segments.csv')
     (nvtx/'worker.log').write_text('\n'.join(s for s in logs if s.startswith('RESULT '))+'\n')
     images=[dict(schema_version=2,image=i,**{k:0. for k in LEAF_FIELDS},inference_ms=10.,fhe_eval_ms=0.,
@@ -80,4 +80,30 @@ with tempfile.TemporaryDirectory(prefix='cheddar-ks-alignment-') as temporary:
     try:compare(event,nvtx,root/'mismatch')
     except ValueError as e:assert 'metadata mismatch' in str(e)
     else:raise AssertionError('accepted mismatched segment metadata')
+    mixed_rows=[dict(r) for r in rows]
+    mixed_nvtx=[dict(r,category='keyswitch') for r in nvtx_rows]
+    for r in mixed_rows:
+        meta=json.loads(r['metadata'])
+        if meta['segment_id']==3:meta['category']='hybrid'
+        r['metadata']=json.dumps(meta)
+    for r in mixed_nvtx:
+        if r['segment_id']==3:r['category']='hybrid'
+    write(mixed_rows);write(mixed_nvtx,nvtx/'nvtx-analysis/ks_segments.csv')
+    mixed=analyze(event/'events.csv',event/'worker.log',event/'event-analysis',1,False)
+    assert mixed['mean_ms']['keyswitch']==5.5 and mixed['mean_ms']['hybrid']==1
+    for path,name,key,hybrid in ((event,'CUDA_EVENT',5.5,1),(nvtx,'NVTX',4.95,.9)):
+        value=json.loads((path/'cpu.json').read_text());value['split_hybrid']=False
+        for image in value['images']:image['split_hybrid']=False
+        (path/'cpu.json').write_text(json.dumps(value))
+        value=json.loads((path/'summary.json').read_text());value[name].update(KeyswitchTime=key,Hybrid=hybrid)
+        (path/'summary.json').write_text(json.dumps(value))
+    mixed_pair=compare(event,nvtx,root/'mixed-paired')
+    assert not mixed_pair['split_hybrid'] and mixed_pair['matched_segments']==8
+    assert math.isclose(mixed_pair['event_hybrid_mean_ms'],1) and math.isclose(mixed_pair['hybrid_delta_ms'],.1)
+    value=json.loads((nvtx/'cpu.json').read_text());value['split_hybrid']=True
+    for image in value['images']:image['split_hybrid']=True
+    (nvtx/'cpu.json').write_text(json.dumps(value))
+    try:compare(event,nvtx,root/'different-modes')
+    except ValueError as error:assert 'split_hybrid' in str(error)
+    else:raise AssertionError('accepted different execution modes')
 print('KS_EVENT_ALIGNMENT_TEST_PASS census, shared batches, pairing and rejection')

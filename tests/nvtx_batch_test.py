@@ -38,7 +38,7 @@ for image in range(count):
         numerical_passed=not failed,numerical_failures=int(failed),
         model=Path(args['--weights']).stem,image=image,prediction=0,fhe_logits=logits)))
     if failed:print('NUMERICAL_WARNING test.relu image='+str(image)+' max_abs_error=0.02 threshold=0.01',file=sys.stderr)
-    if args['--time-nvtx']=='on':print('GPU_TRACE_AUDIT '+json.dumps(dict(image=image,ranges=8 if args['--split-hybrid']=='on' else 6)))
+    if args['--time-nvtx']=='on':print('GPU_TRACE_AUDIT '+json.dumps(dict(image=image,ranges=8)))
 report=dict(rows[0]);report.pop('image');report.update(inference_ms=10.*count,dispatch_ms=10.*count,
     images=rows,total_ms=40.+10*count,model_prepare_ms=35.,boot_prepare_ms=5.,timing_detail='coarse',
     key_mode=mode,key_load_ms=4. if mode=='load' else 0.,weight_preencode_ms=8. if pre else 0.,
@@ -79,12 +79,14 @@ for image in range(count):
     for a,b,label in [(0,100,'image:'+str(image)),(5,90,'phase:linear_ms'),(6,89,'layer:conv1'),(10,80,'source:linear_transform'),
                        (20,30,'op:key_mult'),(40,50,'op:'+('key_correction' if split else 'moddown_rescale'))]:
         scopes.append(((base+a)*u,(base+b)*u,'cheddar:'+label))
-    if split:
-        for unit,a,b in [(1,19,31),(2,39,51)]:
-            meta=dict(ks_id=unit,segment_id=unit,kind='multkey',segment='core',logical_ks=1,
-                      lt_id=0,baby_id=0,includes_permutation=False)
-            scopes.append(((base+a)*u,(base+b)*u,'cheddar:ks:'+json.dumps(meta)))
-    for a,b,c,k,l in [(21,22,1,92,95),(41,42,2,97,98),(60,61,3,95,97)]:
+    for unit,a,b in [(1,19,31),(2,39,51)]:
+        meta=dict(ks_id=unit,segment_id=unit,kind='multkey',segment='core',logical_ks=1,
+                  category='hybrid' if unit==2 and not split else 'keyswitch',
+                  lt_id=0,baby_id=0,includes_permutation=False)
+        scopes.append(((base+a)*u,(base+b)*u,'cheddar:ks:'+json.dumps(meta)))
+    launches=[(21,22,1,92,95),(41,42,2,97,98),(60,61,3,95,97)]
+    if not split:launches.append((43,44,4,99,100))
+    for a,b,c,k,l in launches:
         corr=image*10+c
         db.execute('INSERT INTO CUPTI_ACTIVITY_KIND_RUNTIME VALUES(?,?,7,?,2)',((base+a)*u,(base+b)*u,corr))
         db.execute('INSERT INTO CUPTI_ACTIVITY_KIND_KERNEL VALUES(?,?,?,1,1,0,1)',((base+k)*u,(base+l)*u,corr))
@@ -139,9 +141,18 @@ with tempfile.TemporaryDirectory(prefix='cheddar-nvtx-batch-test-') as temporary
     result=subprocess.run([*base,'--output',str(folder/'fused'),'--models','resnet20','--split-hybrid','off'],text=True,capture_output=True)
     assert result.returncode==0,(result.stdout,result.stderr)
     fused=json.loads((folder/'fused/summary.json').read_text())['models'][0]
-    assert fused['split_hybrid']=='off' and fused['nvtx_hybrid_ms']==1
-    assert fused['nvtx_keyswitch_ms'] is None and fused['non_keyswitch_residual_ms'] is None
-    assert fused['nvtx_keyswitch_kernel_diagnostic_ms']==3 and fused['timing_diagnostic_only']
+    assert fused['split_hybrid']=='off' and fused['nvtx_hybrid_ms']==3
+    assert fused['nvtx_keyswitch_ms']==3 and fused['non_keyswitch_residual_ms']==4
+    assert fused['nvtx_keyswitch_kernel_diagnostic_ms']==3 and not fused['timing_diagnostic_only']
+    assert fused['nvtx_hybrid_kernel_diagnostic_ms']==2  # The 1 ms internal gap belongs to Hybrid.
+    fused_launch=launch.copy()
+    fused_launch[fused_launch.index('--split-hybrid')+1]='off'
+    fused_launch[fused_launch.index('--timing-dir')+1]=str(folder/'fused-launcher')
+    result=subprocess.run(fused_launch,text=True,capture_output=True)
+    assert result.returncode==0,(result.stdout,result.stderr)
+    report=next(json.loads(s[len('NVTX_TIMING '):]) for s in result.stdout.splitlines() if s.startswith('NVTX_TIMING '))
+    assert report['KeyswitchTime']==3 and report['Hybrid']==3 and report['NonKeyswitchTime']==4
+    assert report['total']==10 and report['method']=='nsys_keyswitch_segment_gpu_span_v1'
     (models/'vgg11.bin').write_text('NUMERICAL')
     result=subprocess.run([*base,'--output',str(folder/'numerical-warn'),'--models','vgg11','resnet20','--numerical-gate','warn'],text=True,capture_output=True)
     assert result.returncode==1,(result.stdout,result.stderr)

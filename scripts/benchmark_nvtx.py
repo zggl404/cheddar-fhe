@@ -65,6 +65,8 @@ def run_phase(args, model, binary, weights, keys, mode, folder, count, encoding,
         raise ValueError('worker must provide coarse timing without synchronized operation profiling; rebuild examples')
     if report.get('numerical_gate')!=args.numerical_gate:
         raise ValueError('worker numerical-gate mode disagrees; rebuild examples')
+    if report.get('split_hybrid')!=(args.split_hybrid=='on'):
+        raise ValueError('worker split-hybrid mode disagrees; rebuild examples')
     if report['encode_mode'] not in ('pre','stream'):
         raise ValueError('worker did not report resolved encoding mode')
     if len(report['images']) != count or [r['image'] for r in report['images']] != list(range(count)):
@@ -141,23 +143,24 @@ def pair_result(baseline, profiled, analysis, warmup, numerical_gate='strict'):
         run['inference_mean_ms'] = sum(r['inference_ms'] for r in run['image_times'][warmup:])/len(ids)
     mean = analysis['mean_ms']
     spans = analysis.get('ks_spans')
-    if analysis.get('split_hybrid') and not spans:
-        raise ValueError('missing KS GPU spans; rebuild and recollect the NVTX trace')
-    key = number(mean['keyswitch_span'], 'NVTX Keyswitch span') if spans else None
-    residual = profiled['inference_mean_ms']-key if spans else None
-    if spans:number(residual, 'Inference minus NVTX Keyswitch')
+    if not spans or not spans.get('coverage_verified'):
+        raise ValueError('missing verified KS/Hybrid GPU stage spans; rebuild and recollect the NVTX trace')
+    key = number(mean['keyswitch_span'], 'NVTX Keyswitch')
+    hybrid = number(mean.get('hybrid_span', 0), 'NVTX Hybrid')
+    residual = number(profiled['inference_mean_ms']-key-hybrid, 'Inference minus NVTX Keyswitch and Hybrid')
     return dict(measured_count=len(ids), warmup_count=warmup, max_logits_delta=maximum,
         numerical_passed=numerical_passed, diagnostic_only=not numerical_passed,
         paired_numerical_passed=paired_passed, paired_predictions_match=predictions_match,
         numerical_failures=baseline.get('numerical_failures',0)+profiled.get('numerical_failures',0)+int(not paired_passed),
-        nvtx_keyswitch_ms=key, nvtx_hybrid_ms=mean.get('kernel_hybrid', 0),
-        nvtx_method=analysis['method'], timing_diagnostic_only=not bool(spans),
+        nvtx_keyswitch_ms=key, nvtx_hybrid_ms=hybrid,
+        nvtx_method=analysis['method'], timing_diagnostic_only=False,
         ks_policy=analysis['policy'],
         fused_baby_inclusive_ms=mean.get('fused_baby_inclusive'),
         nvtx_keyswitch_kernel_diagnostic_ms=mean.get('kernel_keyswitch', 0),
+        nvtx_hybrid_kernel_diagnostic_ms=mean.get('kernel_hybrid', 0),
         nvtx_other_kernel_ms=mean.get('kernel_other', 0), nvtx_kernel_total_ms=mean['kernel_total'],
         non_keyswitch_residual_ms=residual,
-        residual_definition='profiled inference wall mean minus same-run KS GPU segment span mean; residual includes host work, remaining idle, input, validation and runtime encoding')
+        residual_definition='profiled inference wall mean minus same-run KS and Hybrid GPU stage span means')
 
 
 def write_summary(output, summary):
@@ -169,7 +172,7 @@ def write_summary(output, summary):
         *[f'{kind}_{key}' for kind in ('baseline','profiled') for key in
           ('end_to_end_ms','time_real_ms','time_user_ms','time_sys_ms','key_load_ms','weight_preencode_ms','inference_total_ms','inference_mean_ms','other_prepare_and_teardown_ms')],
         'nvtx_keyswitch_ms','nvtx_method','timing_diagnostic_only','fused_baby_inclusive_ms',
-        'nvtx_keyswitch_kernel_diagnostic_ms','nvtx_hybrid_ms','nvtx_other_kernel_ms','non_keyswitch_residual_ms','error']
+        'nvtx_keyswitch_kernel_diagnostic_ms','nvtx_hybrid_kernel_diagnostic_ms','nvtx_hybrid_ms','nvtx_other_kernel_ms','non_keyswitch_residual_ms','error']
     with (output/'summary.csv.tmp').open('w', newline='') as handle:
         writer=csv.DictWriter(handle, fieldnames=fields);writer.writeheader()
         for row in summary['models']:

@@ -436,7 +436,7 @@ int main(int argc,char** argv) {
       example::PrintPreparedMemory(options.run,total-free);
     }
     report.RecordKeys(*client);
-    GpuEventTiming event_timing(65536,options.run.split_hybrid);
+    GpuEventTiming event_timing(131072,true);
     GpuTraceRange trace_run("cheddar:run", false);
     runner.timing.Reset();const auto probe_begin=Clock::now();
     if(options.mode=="encode") EncodeProbe(context,*client,runner.timing);

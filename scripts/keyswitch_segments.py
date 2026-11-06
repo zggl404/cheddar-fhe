@@ -1,12 +1,13 @@
-"""Reconstruct non-overlapping KS GPU spans from NVTX launch ownership."""
+"""Reconstruct disjoint KS/Hybrid GPU stage spans from NVTX launch ownership."""
 from bisect import bisect_left
 from collections import defaultdict
 import csv
 import json
 
 KINDS = ('multkey', 'relinearize_rescale', 'baby', 'giant', 'sparse_to_dense',
-         'shared_prepare', 'shared_finish')
-POLICY = ('KS spans follow declared execution units; Baby preparation stays fused. '
+         'shared_prepare', 'shared_finish', 'automorphism_accum', 'shared_lift')
+ZERO_LOGICAL_KINDS = ('shared_prepare', 'shared_finish', 'automorphism_accum', 'shared_lift')
+POLICY = ('KS/Hybrid spans follow explicitly classified execution stages; Baby preparation stays fused. '
           'Shared finishes are counted once. '
           'Duration is the sum of disjoint first-kernel-to-last-kernel spans, '
           'including internal gaps; it is not pure kernel busy time.')
@@ -14,6 +15,9 @@ POLICY = ('KS spans follow declared execution units; Baby preparation stays fuse
 
 def metadata(text):
     row = json.loads(text)
+    row.setdefault('category', 'keyswitch')
+    if row['category'] not in ('keyswitch', 'hybrid'):
+        raise ValueError('invalid stage category')
     for key in ('ks_id', 'segment_id', 'logical_ks', 'lt_id', 'baby_id'):
         if type(row.get(key)) is not int or row[key] < 0:
             raise ValueError(f'invalid KS metadata: {key}')
@@ -23,8 +27,10 @@ def metadata(text):
         raise ValueError('missing KS segment name')
     if type(row.get('includes_permutation')) is not bool:
         raise ValueError('missing fused permutation policy')
-    if bool(row['logical_ks']) == row['kind'].startswith('shared_'):
+    if bool(row['logical_ks']) == (row['kind'] in ZERO_LOGICAL_KINDS):
         raise ValueError('shared stages must have zero logical KS; execution units must be nonzero')
+    if row['kind'] in ('automorphism_accum', 'shared_lift') and row['category'] != 'hybrid':
+        raise ValueError('mixed stages must be classified as Hybrid')
     return row
 
 
@@ -64,15 +70,15 @@ def reconstruct(ranges, activities, output, images, measured):
         image = row['image']
         origins[image] = min(origins.get(image, row['start_ns']), row['start_ns'])
         meta = row['ks']
-        if row['fhe'] and row['category'] == 'keyswitch' and meta is None:
-            raise ValueError(f'unowned KS kernel: image={image} op={row["op"]} layer={row["layer"]}')
+        if row['fhe'] and row['category'] in ('keyswitch', 'hybrid') and meta is None:
+            raise ValueError(f'unowned KS/Hybrid kernel: image={image} op={row["op"]} layer={row["layer"]}; rebuild and recollect stage labels')
         if meta is None:
             continue
         if not row['fhe'] or row['layer'] == 'none':
             raise ValueError('KS kernel has no FHE/layer owner')
-        if row['category'] != 'keyswitch' and not (
-                meta['includes_permutation'] and row['op'] == 'automorphism'):
-            raise ValueError(f'NonKS kernel inside KS span: {row["op"]}')
+        if row['category'] != meta['category'] and not (
+                meta['category'] == 'keyswitch' and meta['includes_permutation'] and row['op'] == 'automorphism'):
+            raise ValueError(f'kernel category disagrees with declared {meta["category"]} stage: {row["op"]}; rebuild and recollect stage labels')
         key = image, meta['segment_id']
         if declared.get(key) != meta:
             raise ValueError('KS launch metadata disagrees with its declared segment')
@@ -117,26 +123,32 @@ def reconstruct(ranges, activities, output, images, measured):
             lt_ids=';'.join(str(i) for i in sorted({r['lt_id'] for r in rows})),
             includes_permutation=head['includes_permutation'], segment_count=len(rows),
             gpu_start_ns=min(r['gpu_start_ns'] for r in rows), gpu_end_ns=max(r['gpu_end_ns'] for r in rows),
+            keyswitch_ms=sum(r['duration_ns'] for r in rows if r['category'] == 'keyswitch')/1e6,
+            hybrid_ms=sum(r['duration_ns'] for r in rows if r['category'] == 'hybrid')/1e6,
             duration_ms=sum(r['duration_ns'] for r in rows)/1e6))
-    layers = defaultdict(lambda: dict(logical_ks=0, execution_units=0, **{k+'_ms': 0. for k in KINDS}))
+    layers = defaultdict(lambda: dict(logical_ks=0, execution_units=0, keyswitch_ms=0., hybrid_ms=0.,
+                                      **{k+'_ms': 0. for k in KINDS}))
     for row in units:
         layer = layers[row['image'], row['layer']]
         layer['logical_ks'] += row['logical_ks']
         layer['execution_units'] += row['execution_units']
         layer[row['kind']+'_ms'] += row['duration_ms']
-    layer_rows = [dict(image=image, measured=int(image in measured), layer=name, **row,
-                       keyswitch_ms=sum(row[k+'_ms'] for k in KINDS))
+        layer['keyswitch_ms'] += row['keyswitch_ms']
+        layer['hybrid_ms'] += row['hybrid_ms']
+    layer_rows = [dict(image=image, measured=int(image in measured), layer=name, **row)
                   for (image, name), row in layers.items()]
     per_image = {}
     for image in images:
         selected = [r for r in segments if r['image'] == image]
         if not selected:
             raise ValueError(f'image {image} has no KS spans')
-        per_image[image] = dict(keyswitch_span_ns=sum(r['duration_ns'] for r in selected),
-            fused_baby_inclusive_ns=sum(r['duration_ns'] for r in selected if r['includes_permutation']),
+        per_image[image] = dict(keyswitch_span_ns=sum(r['duration_ns'] for r in selected if r['category'] == 'keyswitch'),
+            hybrid_span_ns=sum(r['duration_ns'] for r in selected if r['category'] == 'hybrid'),
+            fused_baby_inclusive_ns=sum(r['duration_ns'] for r in selected if r['includes_permutation'] and r['category'] == 'keyswitch'),
             logical_ks=sum(r['logical_ks'] for r in units if r['image'] == image),
             execution_units=sum(r['execution_units'] for r in units if r['image'] == image),
-            keyswitch_segments=len(selected))
+            keyswitch_segments=sum(r['category'] == 'keyswitch' for r in selected),
+            hybrid_segments=sum(r['category'] == 'hybrid' for r in selected))
     write_csv(output/'ks_segments.csv', segments)
     write_csv(output/'ks_units.csv', units)
     write_csv(output/'ks_layers.csv', layer_rows)

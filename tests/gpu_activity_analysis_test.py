@@ -41,10 +41,13 @@ with tempfile.TemporaryDirectory(prefix='cheddar-activity-test-') as temporary:
         CREATE TABLE CUPTI_ACTIVITY_KIND_KERNEL(start INTEGER,end INTEGER,correlationId INTEGER,contextId INTEGER,streamId INTEGER,deviceId INTEGER,demangledName INTEGER);
         CREATE TABLE CUPTI_ACTIVITY_KIND_MEMCPY(start INTEGER,end INTEGER,correlationId INTEGER,contextId INTEGER,streamId INTEGER,deviceId INTEGER);
     ''')
-    scopes = [(-1,2100,'run'), (0,2000,'image:0'), (10,1000,'phase:linear_ms'), (20,900,'source:linear_transform'),
+    scopes = [(-1,2100,'run'), (0,2000,'image:0'), (10,1000,'phase:linear_ms'), (15,990,'layer:conv1'), (20,900,'source:linear_transform'),
               (30,200,'op:key_mult'), (40,100,'op:modup'), (50,90,'source:rotation'),
               (110,140,'op:key_mult'), (290,310,'op:moddown_rescale'),
               (1050,1900,'phase:validation_output_ms')]
+    for unit,a,b,category in [(1,25,205,'keyswitch'),(2,285,315,'hybrid')]:
+        scopes.append((a,b,'ks:'+json.dumps(dict(ks_id=unit,segment_id=unit,kind='multkey',segment='core',
+                      logical_ks=1,lt_id=0,baby_id=0,includes_permutation=False,category=category))))
     db.executemany('INSERT INTO NVTX_EVENTS VALUES(?,?,7,?,NULL)',
                    [(s,e,'cheddar:'+name) for s,e,name in scopes])
     calls = [(60,61,1), (120,121,2), (250,251,3), (300,301,4), (1100,1101,5), (70,71,6)]

@@ -11,7 +11,7 @@ from analyze_gpu_activity import FHE_PHASES, SOURCES, classify
 from keyswitch_segments import metadata, write_csv, POLICY
 
 
-def analyze_ks(csv_path, log_path, output, warmup):
+def analyze_ks(csv_path, log_path, output, warmup, split_hybrid):
     audits = [json.loads(line.split(' ', 1)[1]) for line in Path(log_path).read_text().splitlines()
               if line.startswith('CUDA_EVENT_KS_IMAGE ')]
     expected = {r['image']: r for r in audits}
@@ -20,10 +20,13 @@ def analyze_ks(csv_path, log_path, output, warmup):
         raise ValueError('missing/duplicate KS event audits or invalid warmup')
     measured = set(images[warmup:])
     rows, counts, totals, units, last = [], Counter(), Counter(), {}, {}
+    categories = defaultdict(Counter)
     with Path(csv_path).open(newline='') as handle:
         for raw in csv.DictReader(handle):
             image = int(raw['image'])
             meta = metadata(raw['metadata'])
+            if split_hybrid and meta['category'] != 'keyswitch':
+                raise ValueError('Hybrid stage remains in split Event execution')
             begin, end = int(raw['start_event']), int(raw['end_event'])
             start_ms, end_ms, ms = (float(raw[k]) for k in ('start_relative_ms', 'end_relative_ms', 'milliseconds'))
             if image not in expected or meta['segment_id'] != counts[image]+1 or begin != 2*counts[image]+1 or end != begin+1:
@@ -42,6 +45,7 @@ def analyze_ks(csv_path, log_path, output, warmup):
                 raise ValueError('inconsistent KS event unit metadata')
             units[key] = identity
             counts[image] += 1;totals[image] += ms;last[image] = end_ms
+            categories[image][meta['category']] += ms
             rows.append(dict(image=image, measured=int(image in measured), layer=raw['layer'], subpath=raw['subpath'],
                 **meta, start_event=begin, end_event=end, start_relative_us=start_ms*1000,
                 end_relative_us=end_ms*1000, duration_ms=ms))
@@ -52,14 +56,16 @@ def analyze_ks(csv_path, log_path, output, warmup):
             raise ValueError('KS event CSV disagrees with program duration sum')
     output = Path(output);output.mkdir(parents=True, exist_ok=True)
     write_csv(output/'ks_segments.csv', rows)
-    image_rows = [dict(image=i, keyswitch_ms=totals[i], segments=counts[i], events=expected[i]['events'],
+    image_rows = [dict(image=i, keyswitch_ms=categories[i]['keyswitch'],hybrid_ms=categories[i]['hybrid'],
+        segments=counts[i], events=expected[i]['events'],
         logical_ks=sum(v[1] for (image, _), v in units.items() if image == i),
         execution_units=sum(v[1] > 0 for (image, _), v in units.items() if image == i),
         readback_ms=expected[i]['readback_ms']) for i in images]
-    result = dict(method='cuda_event_keyswitch_segments_v1', split_hybrid=True,
+    result = dict(method='cuda_event_keyswitch_segments_v1', split_hybrid=split_hybrid,
         measured_images=sorted(measured), warmup_images=images[:warmup],
-        mean_ms=dict(keyswitch=sum(totals[i] for i in measured)/len(measured),
-            fused_baby_inclusive=sum(r['duration_ms'] for r in rows if r['image'] in measured and r['includes_permutation'])/len(measured)),
+        mean_ms=dict(keyswitch=sum(categories[i]['keyswitch'] for i in measured)/len(measured),
+            hybrid=sum(categories[i]['hybrid'] for i in measured)/len(measured),
+            fused_baby_inclusive=sum(r['duration_ms'] for r in rows if r['image'] in measured and r['includes_permutation'] and r['category']=='keyswitch')/len(measured)),
         mean_readback_ms=sum(expected[i]['readback_ms'] for i in measured)/len(measured),
         images=image_rows, image_audits=audits, census_verified=True,
         timestamp_origin='CUDA event recorded at BeginImage; offsets are not absolute GPU timestamps',
@@ -73,8 +79,7 @@ def analyze(csv_path, log_path, output, warmup=1, split_hybrid=False):
     with Path(csv_path).open(newline='') as handle:
         aligned = 'metadata' in (csv.DictReader(handle).fieldnames or [])
     if aligned:
-        if not split_hybrid:raise ValueError('KS event segments require --split-hybrid on')
-        return analyze_ks(csv_path, log_path, output, warmup)
+        return analyze_ks(csv_path, log_path, output, warmup,split_hybrid)
     audits = [json.loads(line[len('CUDA_EVENT_IMAGE '):]) for line in Path(log_path).read_text().splitlines()
               if line.startswith('CUDA_EVENT_IMAGE ')]
     expected = {r['image']: r for r in audits}

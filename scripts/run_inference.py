@@ -179,8 +179,9 @@ def main():
                     if [r['image'] for r in wall['images']][args.warmup:] != analysis['measured_images']:
                         raise ValueError('KS Event and wall timing used different images')
                     inference = sum(r['inference_ms'] for r in wall['images'][args.warmup:])/len(analysis['measured_images'])
+                    key,hybrid=mean['keyswitch'],mean.get('hybrid',0)
                     reports['CUDA_EVENT'] = category_report(analysis['method'], 'same_run_inference_wall_with_ks_event_segments',
-                        mean['keyswitch'], inference-mean['keyswitch'], 0, args.warmup, len(analysis['measured_images']))
+                        key,inference-key-hybrid,hybrid,args.warmup,len(analysis['measured_images']))
                     reports['CUDA_EVENT'].update(profiled_inference_mean_ms=inference,
                         fused_baby_inclusive_ms=mean['fused_baby_inclusive'], boundary=analysis['boundary'])
                 else:
@@ -191,24 +192,21 @@ def main():
                 from analyze_gpu_activity import analyze
                 analysis = analyze(folder/'nvtx.sqlite', folder/'nvtx-analysis', args.warmup, log, args.split_hybrid=='on')
                 mean = analysis['mean_ms']
-                if args.split_hybrid == 'on':
-                    wall = json.loads(path.read_text())
-                    validate_run(wall)
-                    if [r['image'] for r in wall['images']][args.warmup:] != analysis['measured_images']:
-                        raise ValueError('NVTX and wall timing used different images')
-                    inference = sum(r['inference_ms'] for r in wall['images'][args.warmup:])/len(analysis['measured_images'])
-                    key = mean['keyswitch_span']
-                    reports['NVTX'] = category_report(analysis['method'], 'same_run_inference_wall_with_ks_gpu_spans',
-                        key, inference-key, 0, args.warmup, len(analysis['measured_images']))
-                    reports['NVTX'].update(profiled_inference_mean_ms=inference,
-                        fused_baby_inclusive_ms=mean['fused_baby_inclusive'], policy=analysis['policy'],
-                        timestamp_files=analysis['ks_spans']['files'],
-                        kernel_keyswitch_diagnostic_ms=mean.get('kernel_keyswitch', 0))
-                else:
-                    reports['NVTX'] = category_report('legacy_fused_kernel_diagnostics',
-                        'fhe_kernel_duration_sum_diagnostic_only', mean.get('kernel_keyswitch', 0), mean.get('kernel_other', 0),
-                        mean.get('kernel_hybrid', 0), args.warmup, len(analysis['measured_images']))
-                    reports['NVTX']['timing_diagnostic_only'] = True
+                wall = json.loads(path.read_text())
+                validate_run(wall)
+                if [r['image'] for r in wall['images']][args.warmup:] != analysis['measured_images']:
+                    raise ValueError('NVTX and wall timing used different images')
+                if any(r['kernel_overlap_ns'] for r in analysis['images']):
+                    raise ValueError('overlapping kernels cannot partition inference elapsed time')
+                inference = sum(r['inference_ms'] for r in wall['images'][args.warmup:])/len(analysis['measured_images'])
+                key, hybrid = mean['keyswitch_span'], mean.get('hybrid_span', 0)
+                reports['NVTX'] = category_report(analysis['method'], 'same_run_inference_wall_with_ks_gpu_spans',
+                    key, inference-key-hybrid, hybrid, args.warmup, len(analysis['measured_images']))
+                reports['NVTX'].update(profiled_inference_mean_ms=inference,
+                    fused_baby_inclusive_ms=mean['fused_baby_inclusive'], policy=analysis['policy'],
+                    timestamp_files=analysis['ks_spans']['files'], timing_diagnostic_only=False,
+                    kernel_keyswitch_diagnostic_ms=mean.get('kernel_keyswitch', 0),
+                    kernel_hybrid_diagnostic_ms=mean.get('kernel_hybrid', 0))
             for name, report in reports.items():
                 report.setdefault('policy', 'KS timing follows the declared execution stages; Baby preparation stays fused.')
                 report.update(numerical_passed=numerical_passed,diagnostic_only=not numerical_passed)

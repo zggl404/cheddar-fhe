@@ -756,6 +756,8 @@ void Context<word>::RelinearizeRescale(Ct &res, const Ct &a,
     switcher.Rescale(res_ax_view,a_down.ConstView());
     return;
   }
+  segment.Finish();
+  KsTraceSegment hybrid(unit,"finish",true,"hybrid");
   mod_switch_handlers_.at(level).ModDownAndRescale(res_bx_view,
                                                    accum.BxConstView());
   mod_switch_handlers_.at(level).ModDownAndRescale(res_ax_view,

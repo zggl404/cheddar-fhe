@@ -19,6 +19,11 @@ int main() {
       KsTraceSegment prepare(baby,"prepare");
     }
     {
+      const auto mixed=MakeKsTraceUnit("shared_lift",0);
+      KsTraceSegment hybrid(mixed,"prepare",true,"hybrid");
+      hybrid.Finish();
+    }
+    {
       KsTraceLinear linear(&map,false);
       assert(ks_trace.finish.id==baby.id);
       if(GpuTraceEnabled())assert(ks_trace.lt_id&&ks_trace.baby_id==baby.id);

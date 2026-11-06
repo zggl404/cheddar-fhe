@@ -164,8 +164,9 @@ CPU 墙钟计时的阶段边界在所有模型中一致：
 预编码计入模型准备；实时编码计入推理阶段。Boot 准备与 Boot 执行分开统计。
 三段总计覆盖所有图片，包括预热；每图均值只统计同一组正式图片。
 上述 CPU 时间为同步墙钟，单位 ms，包含相应区段的主机开销。CPU 分类覆盖 FHE。
-split 模式下 Event/NVTX 共用 KS 阶段 ID，分别报告 Event elapsed / GPU 阶段跨度及同次完整 Inference 剩余墙钟。
-逐段独立比较命令见 [交叉验证](docs/keyswitch-spans.md#event-与-nvtx-独立交叉验证)；旧 Event 的 FHE 口径保留在 split off。
+两种拆分模式的 Event/NVTX 均共用 KS / Hybrid 阶段 ID 和分类，分别报告 Event elapsed /
+GPU 阶段跨度及同次完整 Inference 剩余墙钟。推理入口预创建 131,072 个事件。
+逐段独立比较命令见 [交叉验证](docs/keyswitch-spans.md#event-与-nvtx-独立交叉验证)；旧 Event CSV 仍可离线分析。
 
 核对端到端耗时：
 
@@ -193,7 +194,8 @@ python scripts/benchmark_timing.py \
   --output validation/timing-all --count 6 --warmup 1 --encode-mode auto
 ```
 
-默认处理全部十个模型，固定 `split-hybrid on`，逐模型生成临时密钥并使用 load 测量，结束后清理。
+默认处理全部十个模型，使用 `split-hybrid on`，也可显式选择 `--split-hybrid off`。
+逐模型生成临时密钥并使用 load 测量，结束后清理。
 每个模型会核对四次运行的 Logits，以及 Event/NVTX 每个阶段的 ID 和归属；
 `summary.csv` 汇总准备、推理和 KS 时间，详细命令与字段见[计时执行说明](docs/run-timing.md)。
 `--models resnet20 resnet110` 可选择部分模型；`nsys` 不在 PATH 时追加 `--nsys /path/to/nsys`。
@@ -245,17 +247,18 @@ python scripts/benchmark_nvtx.py \
 | `*_inference_total_ms` | 全部图片的输入开始至校验/输出及末尾同步完成，含预热 |
 | `*_inference_mean_ms` | 排除 warmup 后的单图 Inference 均值 |
 | `*_other_prepare_and_teardown_ms` | 端到端扣除 key load、预编码、全部 Inference 的其余部分 |
-| `nvtx_keyswitch_ms` | 同一组正式图片的 KS GPU 阶段跨度均值 |
-| `fused_baby_inclusive_ms` | Baby 准备及关联 finish 子项，已包含在 KS 总量内 |
-| `nvtx_keyswitch_kernel_diagnostic_ms` | 另存 KS kernel duration sum，供对照诊断 |
-| `non_keyswitch_residual_ms` | **profiled Inference 均值 − 同次采集的 NVTX Keyswitch 均值** |
-| `nvtx_other_kernel_ms` / `nvtx_hybrid_ms` | 另外保留纯 GPU Other 与 Hybrid，避免把剩余墙钟解释为纯 GPU NonKeyswitch |
+| `nvtx_keyswitch_ms` / `nvtx_hybrid_ms` | KS / Hybrid 连续 GPU 阶段跨度均值，两种拆分模式使用相同边界定义 |
+| `fused_baby_inclusive_ms` | Baby 准备及关联 KS finish 子项，已包含在 KS 总量内；Hybrid finish 计入 Hybrid |
+| `nvtx_keyswitch_kernel_diagnostic_ms` / `nvtx_hybrid_kernel_diagnostic_ms` | 另存 KS / Hybrid kernel duration sum，供对照诊断 |
+| `non_keyswitch_residual_ms` | **profiled Inference 均值 − 同次采集的 NVTX Keyswitch 均值 − Hybrid 均值** |
+| `nvtx_other_kernel_ms` | 另外保留纯 GPU Other，避免把剩余墙钟解释为纯 GPU NonKeyswitch |
 
-这套相减口径观察整次推理扣除 KS GPU 阶段后的剩余时间，逐层起止时间见 [KS 阶段报告](docs/keyswitch-spans.md)。
-剩余时间包含主机提交/等待、设备空闲、输入、明文参考（若开启）、解密校验、运行期编码及尚未拆开的 Hybrid。
+这套相减口径观察整次推理扣除 KS / Hybrid GPU 阶段后的剩余时间，逐层起止时间见 [KS 阶段报告](docs/keyswitch-spans.md)。
+剩余时间包含主机提交/等待、设备空闲、输入、明文参考（若开启）、解密校验及运行期编码。
 它和纯 GPU Other 有不同含义，也不能用基线 Inference 减去另一次 NVTX 的 Keyswitch。
 本脚本的 `--split-hybrid` 默认 `on`，Hybrid 必须为零；共同短基前置计入 NonKeyswitch。
-需要测原融合路径时显式加 `--split-hybrid off`，只保留 kernel 诊断，主 KS 跨度和 residual 为 null。
+需要测原融合路径时显式加 `--split-hybrid off`，KS 和 Hybrid 都按显式连续阶段统计，
+每段从首个 kernel 开始至最后一个 kernel 结束，包含段内间隔；residual 从完整 Inference 中扣除二者。
 拆分会改变执行路径并可能增加耗时，报告中保留所选模式。
 普通 `run_inference.py` 入口的拆分默认仍为 `off`。
 当前相减限定为无 kernel 重叠的执行，脚本发现重叠会拒绝发布这个差值。
@@ -272,13 +275,37 @@ key load 和预编码本来就是 Prepare 的子项，不要再与完整 Prepare
 
 ### 一次汇总 profiled 时间与全部模型时间线
 
-完成上面的 `benchmark_nvtx.py --split-hybrid on --numerical-gate warn` 后，运行：
+完成 `benchmark_nvtx.py` 后，原融合路径和拆分路径都可以离线汇总，脚本自动读取原实验的模式：
 
 ```bash
 python3 scripts/summarize_nvtx.py \
   --input validation/nvtx-all-split \
   --output validation/nvtx-all-report
 ```
+
+需要采集保留 Hybrid 的原融合路径时：
+
+```bash
+python scripts/benchmark_nvtx.py \
+  --build-dir build --models-dir models --cifar "$CIFAR_BIN" \
+  --output validation/nvtx-all-fused --count 6 --warmup 1 \
+  --split-hybrid off --numerical-gate warn
+python3 scripts/summarize_nvtx.py \
+  --input validation/nvtx-all-fused --output validation/nvtx-all-fused-report
+```
+
+本次更新补充了融合路径的 C++ Hybrid 阶段标记，需要先重新编译：
+
+```bash
+cmake -S . -B build -DCHEDDAR_NVTX_TRACE=ON
+cmake --build build --target resnet_cifar cnn_cifar -j
+```
+
+之后 `--split-hybrid on/off` 是运行时选项，同一个二进制即可切换，没有额外的 Hybrid CMake
+开关，也不需要开启 CUDA Event。旧 split on validation 可以继续离线整理；旧融合 trace
+缺少完整 Hybrid 边界，需要用更新后的二进制重新采集，不能从 kernel CSV 猜测阶段。
+已有 split on 的 trace 也无法反推出原融合路径的真实运行时间。
+离线时间线需要保留 `MODEL/profiled/analysis/gpu_activities.csv.gz`，仅有摘要无法恢复时间戳。
 
 这是离线整理，只读取原来的 profiled 采集结果，不重新运行模型或生成密钥。
 `--input` 是原 benchmark 输出目录，`--output` 必须是独立的新目录。
@@ -298,7 +325,7 @@ nvtx-all-report/
 ```
 
 `00_summary.csv` 每模型一行，所有时间使用同次 profiled 运行，单位为 ms。
-已有 validation 可以直接整理，无需重新编译、运行模型或采集 NVTX：
+已具备完整阶段标记的 validation 可以直接离线整理：
 
 | 字段 | 含义 |
 |---|---|
@@ -308,11 +335,16 @@ nvtx-all-report/
 | `init_and_teardown_ms` | 扣除 key load、权重预编码和全部 Inference 后的初始化、边界外开销及收尾 |
 | `inference_total_ms` | 全部 6 张图的 Inference 总时间，包含第 0 张 |
 | `inference_mean_ms` | 后 5 张的单图平均 Inference 时间 |
-| `keyswitch_mean_ms` / `non_keyswitch_mean_ms` | 同样后 5 张的单图平均 KS / NonKS，二者相加等于单图平均 Inference |
-| `image_0_keyswitch_ms` / `image_0_non_keyswitch_ms` … `image_5_*` | 每张图各自的 KS / NonKS，二者相加得到该图的 Inference 时间 |
+| `keyswitch_mean_ms` / `hybrid_mean_ms` / `non_keyswitch_mean_ms` | 同样后 5 张的单图平均 KS / Hybrid / NonKS，三者相加等于单图平均 Inference |
+| `image_0_keyswitch_ms` / `image_0_hybrid_ms` / `image_0_non_keyswitch_ms` … `image_5_*` | 每张图各自的 KS / Hybrid / NonKS，三者相加得到该图的 Inference 时间 |
+| `split_hybrid` / `timing_method` | 原实验拆分开关及统一的阶段跨度计时方法 |
 | `status` / `error` | 原实验数值状态及整理错误 |
 
-KS 使用 NVTX 连续阶段跨度，包含段内间隔；每张图的 NonKS 使用该图完整 Inference 减 KS。
+split on/off 均使用 `nvtx_ks_segment_spans`：KS / Hybrid 都是显式连续阶段的 GPU 首尾跨度，
+段内间隙归该阶段，段间工作归 NonKS。split on 的 Hybrid 为 0；split off 保留原融合计算，
+不可分开的混合阶段归 Hybrid。`ModDownAndRescale` 的 b/a 两个分量作为一个 Hybrid finish；
+Relinearize 的 KS core 在该 finish 前结束；共享 lift 和融合累加也各有独立 Hybrid 阶段。
+每张图的 NonKS 都使用完整 Inference 减 KS 再减 Hybrid。
 主表不再列 GNU time real/user/sys、Boot prepare 的重叠观察值或 timeline 窗口版本。
 Boot 资源准备中的 key load 已在 `key_load_ms` 中，其余非密钥准备工作归入 `init_and_teardown_ms`。
 
@@ -323,12 +355,13 @@ Boot 资源准备中的 key load 已在 `key_load_ms` 中，其余非密钥准�
 end_to_end_ms = key_load_ms + weight_preencode_ms
               + init_and_teardown_ms + inference_total_ms
 
-Inference_i = image_i_keyswitch_ms + image_i_non_keyswitch_ms
+Inference_i = image_i_keyswitch_ms + image_i_hybrid_ms + image_i_non_keyswitch_ms
 inference_total_ms = Inference_0 + … + Inference_5
 inference_mean_ms = (Inference_1 + … + Inference_5) / 5
 keyswitch_mean_ms = (image_1_keyswitch_ms + … + image_5_keyswitch_ms) / 5
 non_keyswitch_mean_ms = (image_1_non_keyswitch_ms + … + image_5_non_keyswitch_ms) / 5
-inference_mean_ms = keyswitch_mean_ms + non_keyswitch_mean_ms
+hybrid_mean_ms = (image_1_hybrid_ms + … + image_5_hybrid_ms) / 5
+inference_mean_ms = keyswitch_mean_ms + hybrid_mean_ms + non_keyswitch_mean_ms
 ```
 
 `init_and_teardown_ms` 不是纯初始化时间，包含以下实际工作；现有日志只能得到它们的合计：
@@ -346,7 +379,7 @@ Inference 中，不重复计入 init/收尾。端到端终点之后写出的 `wa
 warn 模式的有限数值超标仍输出全部时间和 timeline，并标记 `NUMERICAL_FAILED`；
 整理完整时返回 0。模型运行失败、文件缺失或计时校验失败时，该模型时间列留空，
 `error` 写明原因，继续整理其他模型，最终返回非零。
-输入必须是已结束且 `split-hybrid on` 的 benchmark。
+输入必须是已结束的 benchmark；split on/off 均支持，但输入配置与 wall/NVTX 配置必须一致。
 
 ### 单独导出一个模型的 KS / NonKS 起止时间线
 

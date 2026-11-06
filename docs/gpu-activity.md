@@ -66,6 +66,15 @@ nanoseconds. This is an activity-duration partition, not a wall-clock partition.
 The analyzer also reports interval union and overlap. Overlapping category
 unions must not be summed to reconstruct total elapsed time.
 
+The primary NVTX report uses continuous declared KS/Hybrid stage spans in both
+`--split-hybrid on` and `off`: first GPU kernel start to last GPU kernel end,
+including internal gaps. Kernel-duration totals above remain diagnostics.
+`Inference = KS spans + Hybrid spans + NonKS residual` uses the same run's wall
+boundary. Split mode has zero Hybrid; fused mode retains separate mixed stages.
+See [stage boundaries](keyswitch-spans.md). Rebuild both inference binaries after
+the Hybrid annotation update; older fused traces without stage ownership must
+be recollected and are rejected rather than silently treated as kernel sums.
+
 ## Audit and limits
 
 `gpu_activities.csv.gz` retains every exported kernel/memcpy/memset record and
@@ -105,6 +114,13 @@ Build with `-DCHEDDAR_CUDA_EVENT_TRACE=ON` to enable a second, independent
 runtime switch. Pass `--time-cuda-event on` to the unified launcher;
 `--timing-dir /new/path` retains the raw Event CSV and audits for either runner.
 Both the build option and runtime switch default to off. NVTX can be enabled independently.
+
+Current inference runners use one event pair per declared KS/Hybrid stage in
+both split modes, with a preallocated pool of 131,072 events. They share the
+NVTX stage identities and classifications; NonKS is the same-run full Inference
+residual. See [stage comparison](keyswitch-spans.md#event-与-nvtx-独立交叉验证).
+The primitive-level collector below describes legacy CSV evidence and its
+standalone compatibility tests.
 
 The event collector uses the same phase/source/part/operation scopes. Whenever
 the effective owner changes inside an FHE phase, it records one event in the
